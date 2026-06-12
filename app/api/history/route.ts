@@ -1,10 +1,29 @@
 import { desc, eq } from "drizzle-orm";
+import { z } from "zod";
 import { auth } from "@/auth";
 import { db, hasDb } from "@/lib/db";
 import { scans } from "@/lib/schema";
-import type { HistoryBeer, HistoryEntry } from "@/lib/history";
+import type { HistoryEntry } from "@/lib/history";
 
 const MAX_ENTRIES = 30;
+
+// Stored verbatim and rendered back later, so every element is shape-checked
+// (zod also strips unknown keys).
+const HistoryBeerSchema = z.object({
+  name: z.string().min(1).max(200),
+  brewery: z.string().max(200),
+  style: z.string().max(100),
+  rating: z.number().min(0).max(5).nullable(),
+  untappd: z.number().min(0).max(5).nullable(),
+  beerAdvocate: z.number().min(0).max(5).nullable(),
+  ratingSource: z.enum(["live", "estimate"]),
+  price: z.number().min(0).max(100_000).nullable(),
+});
+
+const HistoryPostSchema = z.object({
+  thumb: z.string().startsWith("data:image/").max(100_000),
+  beers: z.array(HistoryBeerSchema).min(1).max(50),
+});
 
 export async function GET() {
   const session = await auth();
@@ -31,27 +50,25 @@ export async function POST(req: Request) {
     return Response.json({ error: "Sign in to save history." }, { status: 401 });
   }
 
-  let body: { thumb?: unknown; beers?: unknown };
+  let body: unknown;
   try {
     body = await req.json();
   } catch {
     return Response.json({ error: "Invalid request." }, { status: 400 });
   }
-  const thumb =
-    typeof body.thumb === "string" && body.thumb.startsWith("data:image/")
-      ? body.thumb.slice(0, 100_000)
-      : null;
-  if (!thumb || !Array.isArray(body.beers) || body.beers.length === 0) {
-    return Response.json({ error: "thumb and beers are required." }, { status: 400 });
+  const parsed = HistoryPostSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json(
+      { error: "thumb (image data URL) and a valid beers array are required." },
+      { status: 400 }
+    );
   }
 
-  await db()
-    .insert(scans)
-    .values({
-      userId: session.user.id,
-      thumb,
-      beers: body.beers.slice(0, 50) as HistoryBeer[],
-    });
+  await db().insert(scans).values({
+    userId: session.user.id,
+    thumb: parsed.data.thumb,
+    beers: parsed.data.beers,
+  });
 
   return Response.json({ ok: true });
 }
