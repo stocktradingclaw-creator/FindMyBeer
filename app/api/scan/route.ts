@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { waitUntil } from "@vercel/functions";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { auth } from "@/auth";
@@ -241,6 +242,13 @@ export async function POST(req: Request) {
       lookup
         .then((m) => console.log(`scan: rating lookup finished in ${Date.now() - t0}ms (${m.size} beers)`))
         .catch((err) => console.error("scan: rating lookup failed:", err));
+      try {
+        // On Vercel, keep the background cache-fill alive after the response
+        // is sent; no-op (throws) when running on a plain Node server.
+        waitUntil(lookup.then(() => undefined).catch(() => undefined));
+      } catch {
+        /* not in a Vercel request context */
+      }
       live = await Promise.race([
         lookup.catch(() => new Map<string, LiveRating>()),
         new Promise<Map<string, LiveRating>>((resolve) =>
