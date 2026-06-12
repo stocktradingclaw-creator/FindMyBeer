@@ -7,6 +7,11 @@ type Beer = ScanResult["beers"][number];
 
 const MAX_EDGE = 2000; // px — keeps image tokens reasonable while labels stay legible
 
+// Set when a photo picker opens; if it's still set on the next page load, the
+// browser reloaded the tab mid-pick (Android low-memory discard) and we can
+// tell the user instead of failing silently.
+const PICK_FLAG = "findmybeer-picking";
+
 function captureFrame(video: HTMLVideoElement): string {
   const scale = Math.min(1, MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
   const canvas = document.createElement("canvas");
@@ -53,6 +58,7 @@ export default function ScanPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
   const [frame, setFrame] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -88,7 +94,15 @@ export default function ScanPage() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- false positive: startCamera only sets state after awaiting getUserMedia
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount beacon + reload detection must run synchronously on mount
+    setMounted(true);
+    const pickedAt = Number(sessionStorage.getItem(PICK_FLAG));
+    sessionStorage.removeItem(PICK_FLAG);
+    if (pickedAt && Date.now() - pickedAt < 5 * 60_000) {
+      setError(
+        "Your browser reloaded the page while the photo picker was open (an Android low-memory quirk). Close other apps/tabs and try again."
+      );
+    }
     startCamera();
     return stopCamera;
   }, [startCamera, stopCamera]);
@@ -130,7 +144,12 @@ export default function ScanPage() {
     startCamera();
   }
 
+  function markPicking() {
+    sessionStorage.setItem(PICK_FLAG, String(Date.now()));
+  }
+
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    sessionStorage.removeItem(PICK_FLAG);
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
@@ -166,6 +185,13 @@ export default function ScanPage() {
           approximate community rating out of 5 — the best picks are
           highlighted.
         </p>
+
+        {!mounted && (
+          <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">
+            Starting the scanner… if this message never goes away, JavaScript
+            failed to load on this browser.
+          </p>
+        )}
 
         {error && (
           <p className="w-full rounded-xl bg-red-50 px-4 py-3 text-center text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
@@ -211,6 +237,7 @@ export default function ScanPage() {
                   accept="image/*"
                   capture="environment"
                   className="hidden"
+                  onClick={markPicking}
                   onChange={onPickFile}
                 />
               </label>
@@ -220,6 +247,7 @@ export default function ScanPage() {
                   type="file"
                   accept="image/*"
                   className="hidden"
+                  onClick={markPicking}
                   onChange={onPickFile}
                 />
               </label>
