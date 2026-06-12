@@ -20,9 +20,15 @@ the top pick highlighted.
   done in 75s the scan responds with knowledge-based estimates (labeled
   "est.") while the search finishes in the background and fills the cache.
 - The UI draws rating badges over the captured frame, lists the beers
-  best-first with live/est labels and prices, and tags the best
-  rating-per-dollar pick with a 💰 badge. Scans are saved to a local
-  history page (`/history`, stored only on the device).
+  best-first with per-site scores (★ is the consolidated average of the
+  Untappd and BeerAdvocate scores), live/est labels and prices, and tags
+  the best rating-per-dollar pick with a 💰 badge. Scans are saved to a
+  local history page (`/history`, stored only on the device).
+- A taste profile (`/taste`: favorite styles, adventurousness, price
+  sensitivity) plus 👍/👎 feedback on scanned beers — all on-device —
+  feeds every scan, and the model returns a 🎯 personal pick that weighs
+  taste fit, quality, seasonal fit, novelty, and price (price never
+  deciding alone).
 
 > **Why not the Untappd API?** It's closed to new applications; the only
 > current option is an Untappd for Business subscription. Web search of

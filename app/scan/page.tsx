@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ScanResponse } from "../api/scan/route";
 import { saveHistoryEntry } from "@/lib/history";
+import { loadTaste, recordStyleFeedback, tasteSummary } from "@/lib/taste";
 
 type Beer = ScanResponse["beers"][number];
 
@@ -65,6 +66,9 @@ export default function ScanPage() {
   const [processing, setProcessing] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [beers, setBeers] = useState<Beer[] | null>(null);
+  const [rec, setRec] = useState<ScanResponse["recommendation"]>(null);
+  const [hasTaste, setHasTaste] = useState(true);
+  const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
   const [error, setError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
@@ -98,6 +102,7 @@ export default function ScanPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- mount beacon + reload detection must run synchronously on mount
     setMounted(true);
+    setHasTaste(loadTaste() !== null);
     const pickedAt = Number(sessionStorage.getItem(PICK_FLAG));
     sessionStorage.removeItem(PICK_FLAG);
     if (pickedAt && Date.now() - pickedAt < 5 * 60_000) {
@@ -114,12 +119,18 @@ export default function ScanPage() {
     setFrame(dataUrl);
     setScanning(true);
     setBeers(null);
+    setRec(null);
+    setVotes({});
     setError(null);
     try {
+      const profile = loadTaste();
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: dataUrl }),
+        body: JSON.stringify({
+          image: dataUrl,
+          taste: profile ? tasteSummary(profile) : null,
+        }),
         signal: AbortSignal.timeout(180_000),
       });
       const json = await res.json();
@@ -128,6 +139,7 @@ export default function ScanPage() {
       } else {
         const found = (json as ScanResponse).beers;
         setBeers(found);
+        setRec((json as ScanResponse).recommendation);
         if (found.length > 0) recordHistory(dataUrl, found);
       }
     } catch (err) {
@@ -144,8 +156,17 @@ export default function ScanPage() {
   function reset() {
     setFrame(null);
     setBeers(null);
+    setRec(null);
+    setVotes({});
     setError(null);
     startCamera();
+  }
+
+  function vote(beer: Beer, value: 1 | -1) {
+    const previous = votes[beer.name] ?? 0;
+    if (previous === value) return;
+    recordStyleFeedback(beer.style, value - previous);
+    setVotes((v) => ({ ...v, [beer.name]: value }));
   }
 
   function markPicking() {
@@ -208,6 +229,7 @@ export default function ScanPage() {
   const sortedBeers = beers
     ? [...beers].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1))
     : null;
+  const recBeer = rec && beers ? (beers[rec.index] ?? null) : null;
   const pricedBeers =
     beers?.filter((b) => b.price !== null && b.price > 0 && b.rating !== null) ?? [];
   const bestValue =
@@ -230,7 +252,22 @@ export default function ScanPage() {
           >
             History
           </Link>
+          <Link
+            href="/taste"
+            className="text-sm font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+          >
+            Taste
+          </Link>
         </div>
+
+        {mounted && !hasTaste && (
+          <Link
+            href="/taste"
+            className="w-full rounded-xl bg-violet-100 px-4 py-3 text-center text-sm font-medium text-violet-800 dark:bg-violet-950 dark:text-violet-200"
+          >
+            🎯 Tell us what you like to drink and every scan gets a personal pick →
+          </Link>
+        )}
         <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
           Point your camera at a beer shelf and scan. Each beer gets an
           approximate community rating out of 5 — the best picks are
@@ -325,9 +362,11 @@ export default function ScanPage() {
                     <div
                       key={i}
                       className={`absolute rounded-md border-2 ${
-                        beer.rating !== null && beer.rating === topRating
-                          ? "border-amber-400"
-                          : "border-white/70"
+                        beer === recBeer
+                          ? "border-violet-400"
+                          : beer.rating !== null && beer.rating === topRating
+                            ? "border-amber-400"
+                            : "border-white/70"
                       }`}
                       style={{
                         left: `${beer.box.x * 100}%`,
@@ -356,6 +395,19 @@ export default function ScanPage() {
               </p>
             )}
 
+            {recBeer && rec && (
+              <div className="w-full rounded-2xl border-2 border-violet-400 bg-white p-4 dark:bg-zinc-900">
+                <p className="font-semibold text-violet-700 dark:text-violet-300">
+                  🎯 Your pick: {recBeer.name}
+                  <span className="font-normal text-zinc-500 dark:text-zinc-400">
+                    {" "}
+                    · {recBeer.brewery}
+                  </span>
+                </p>
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{rec.reason}</p>
+              </div>
+            )}
+
             {sortedBeers && sortedBeers.length > 0 && (
               <ul className="w-full divide-y divide-amber-900/10 rounded-2xl bg-white shadow-sm dark:divide-amber-100/10 dark:bg-zinc-900">
                 {sortedBeers.map((beer, i) => (
@@ -376,6 +428,11 @@ export default function ScanPage() {
                           {" "}
                           · {beer.brewery}
                         </span>
+                        {beer === recBeer && (
+                          <span className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:bg-violet-900 dark:text-violet-200">
+                            🎯 Your pick
+                          </span>
+                        )}
                         {beer === bestValue && (
                           <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
                             💰 Best value
@@ -407,6 +464,30 @@ export default function ScanPage() {
                           : beer.ratingBasis}
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
                       </p>
+                    </div>
+                    <div className="ml-auto flex shrink-0 gap-1">
+                      <button
+                        onClick={() => vote(beer, 1)}
+                        aria-label={`Like ${beer.name}`}
+                        className={`rounded-full px-2 py-1 text-sm transition-colors ${
+                          votes[beer.name] === 1
+                            ? "bg-emerald-100 dark:bg-emerald-900"
+                            : "opacity-40 hover:opacity-100"
+                        }`}
+                      >
+                        👍
+                      </button>
+                      <button
+                        onClick={() => vote(beer, -1)}
+                        aria-label={`Dislike ${beer.name}`}
+                        className={`rounded-full px-2 py-1 text-sm transition-colors ${
+                          votes[beer.name] === -1
+                            ? "bg-red-100 dark:bg-red-900"
+                            : "opacity-40 hover:opacity-100"
+                        }`}
+                      >
+                        👎
+                      </button>
                     </div>
                   </li>
                 ))}

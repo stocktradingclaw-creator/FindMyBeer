@@ -45,6 +45,19 @@ const BeerSchema = z.object({
 
 const ScanResultSchema = z.object({
   beers: z.array(BeerSchema),
+  recommendation: z
+    .object({
+      index: z
+        .number()
+        .describe("0-based index into the beers array of the single recommended beer"),
+      reason: z
+        .string()
+        .describe(
+          "One or two friendly sentences addressed to the drinker explaining why this is their pick today"
+        ),
+    })
+    .nullable()
+    .describe("The one beer to recommend to this drinker right now; null if no beers found"),
 });
 
 export type ScanResult = z.infer<typeof ScanResultSchema>;
@@ -57,9 +70,22 @@ export type ScanBeer = ScanResult["beers"][number] & {
   beerAdvocate: number | null;
 };
 
-export type ScanResponse = { beers: ScanBeer[] };
+export type ScanResponse = {
+  beers: ScanBeer[];
+  recommendation: { index: number; reason: string } | null;
+};
 
-const PROMPT = `This photo shows a beer shelf, fridge, or display. Identify every distinct beer (or cider/seltzer) whose label you can read or recognize.
+function seasonFor(date: Date): string {
+  const month = date.getMonth();
+  if (month === 11 || month <= 1) return "winter";
+  if (month <= 4) return "spring";
+  if (month <= 7) return "summer";
+  return "fall";
+}
+
+function buildPrompt(taste: string | null): string {
+  const today = new Date();
+  return `This photo shows a beer shelf, fridge, or display. Identify every distinct beer (or cider/seltzer) whose label you can read or recognize.
 
 For each distinct beer return one entry:
 - name, brewery, and style from the label (or from your knowledge of the beer if the label is partially visible).
@@ -69,7 +95,19 @@ For each distinct beer return one entry:
 - price: the dollar price from a shelf tag, but only when a tag is clearly visible and clearly belongs to this beer. Null otherwise.
 - box: the approximate bounding box of one representative facing, in normalized 0-1 coordinates.
 
-Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.`;
+Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.
+
+Then choose exactly ONE beer to recommend via the recommendation field (null only if no beers were found). Today is ${today.toISOString().slice(0, 10)} — ${seasonFor(today)} in the northern hemisphere. Weigh together:
+- fit with the drinker's tastes below (the biggest factor when a profile is given);
+- quality and community standing;
+- seasonal fit (rich, dark, warming beers in winter; crisp, refreshing ones in summer; märzen/amber in fall; and seasonal releases when they fit);
+- novelty, matched to how adventurous the drinker says they are — an interesting departure they'd plausibly enjoy can beat a safe favorite;
+- price when visible, as one factor among several — never the deciding factor on its own.
+Write the reason directly to the drinker, mentioning what tipped the choice.
+
+Drinker's taste profile:
+${taste ?? "Unknown — no profile set. Recommend the best overall beer for the season."}`;
+}
 
 type MediaType = "image/jpeg" | "image/png" | "image/webp";
 
@@ -85,11 +123,14 @@ export async function POST(req: Request) {
   }
 
   let image: unknown;
+  let taste: unknown;
   try {
-    ({ image } = await req.json());
+    ({ image, taste } = await req.json());
   } catch {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
+  const tasteText =
+    typeof taste === "string" && taste.trim() ? taste.slice(0, 1500) : null;
 
   const match =
     typeof image === "string"
@@ -119,7 +160,7 @@ export async function POST(req: Request) {
               type: "image",
               source: { type: "base64", media_type: mediaType, data },
             },
-            { type: "text", text: PROMPT },
+            { type: "text", text: buildPrompt(tasteText) },
           ],
         },
       ],
@@ -188,7 +229,14 @@ export async function POST(req: Request) {
       return { ...beer, untappd: null, beerAdvocate: null, ratingSource: "estimate" };
     });
 
-    return Response.json({ beers } satisfies ScanResponse);
+    const recommendation =
+      parsed.recommendation &&
+      parsed.recommendation.index >= 0 &&
+      parsed.recommendation.index < beers.length
+        ? parsed.recommendation
+        : null;
+
+    return Response.json({ beers, recommendation } satisfies ScanResponse);
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
       return Response.json(
