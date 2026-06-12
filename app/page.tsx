@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <div className="flex flex-col flex-1 items-center justify-center bg-amber-50 font-sans dark:bg-zinc-950">
@@ -9,25 +11,18 @@ export default function Home() {
           FindMyBeer
         </h1>
         <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-          Find the right beer, wherever you are. Search by style, brewery, or
-          what&apos;s on tap near you.
+          Standing in front of a wall of beer? Point your camera at the shelf
+          and see which ones are actually worth drinking — each beer gets a
+          rating overlay so the best picks jump out.
         </p>
-        <form className="flex w-full max-w-md gap-2">
-          <input
-            type="search"
-            name="q"
-            placeholder="Try “hazy IPA” or “stout”…"
-            className="h-12 flex-1 rounded-full border border-amber-900/20 bg-white px-5 text-base text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-amber-600 dark:border-amber-100/20 dark:bg-zinc-900 dark:text-zinc-50"
-          />
-          <button
-            type="submit"
-            className="h-12 rounded-full bg-amber-600 px-6 text-base font-medium text-white transition-colors hover:bg-amber-700"
-          >
-            Search
-          </button>
-        </form>
+        <Link
+          href="/scan"
+          className="flex h-14 items-center rounded-full bg-amber-600 px-10 text-lg font-medium text-white transition-colors hover:bg-amber-700"
+        >
+          📷 Scan a shelf
+        </Link>
         <p className="text-sm text-zinc-400 dark:text-zinc-500">
-          Search is a placeholder — the beer data is coming soon.
+          Works with your phone camera or an uploaded photo.
         </p>
       </main>
     </div>
