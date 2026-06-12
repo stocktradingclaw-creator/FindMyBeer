@@ -15,6 +15,23 @@ const MAX_EDGE = 2000; // px — keeps image tokens reasonable while labels stay
 // tell the user instead of failing silently.
 const PICK_FLAG = "findmybeer-picking";
 
+// Origin tiers nest: local ⊂ regional ⊂ domestic. International stands alone.
+const ORIGIN_RANK = { local: 0, regional: 1, domestic: 2, international: 3 } as const;
+type OriginFilter = "all" | keyof typeof ORIGIN_RANK;
+const ORIGIN_LABELS: Record<Exclude<OriginFilter, "all">, string> = {
+  local: "Local",
+  regional: "Regional",
+  domestic: "Domestic",
+  international: "International",
+};
+
+function matchesOrigin(beer: { origin: keyof typeof ORIGIN_RANK | null }, filter: OriginFilter) {
+  if (filter === "all") return true;
+  if (!beer.origin) return false;
+  if (filter === "international") return beer.origin === "international";
+  return ORIGIN_RANK[beer.origin] <= ORIGIN_RANK[filter];
+}
+
 function captureFrame(video: HTMLVideoElement): string {
   const scale = Math.min(1, MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
   const canvas = document.createElement("canvas");
@@ -69,6 +86,7 @@ export default function ScanPage() {
   const [rec, setRec] = useState<ScanResponse["recommendation"]>(null);
   const [hasTaste, setHasTaste] = useState(true);
   const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
+  const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
   const [error, setError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
@@ -121,6 +139,7 @@ export default function ScanPage() {
     setBeers(null);
     setRec(null);
     setVotes({});
+    setOriginFilter("all");
     setError(null);
     try {
       const profile = loadTaste();
@@ -130,6 +149,7 @@ export default function ScanPage() {
         body: JSON.stringify({
           image: dataUrl,
           taste: profile ? tasteSummary(profile) : null,
+          location: profile?.location?.trim() || null,
         }),
         signal: AbortSignal.timeout(180_000),
       });
@@ -158,6 +178,7 @@ export default function ScanPage() {
     setBeers(null);
     setRec(null);
     setVotes({});
+    setOriginFilter("all");
     setError(null);
     startCamera();
   }
@@ -230,6 +251,9 @@ export default function ScanPage() {
     ? [...beers].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1))
     : null;
   const recBeer = rec && beers ? (beers[rec.index] ?? null) : null;
+  const visibleBeers = sortedBeers?.filter((b) => matchesOrigin(b, originFilter)) ?? null;
+  const originCount = (filter: OriginFilter) =>
+    beers?.filter((b) => matchesOrigin(b, filter)).length ?? 0;
   const pricedBeers =
     beers?.filter((b) => b.price !== null && b.price > 0 && b.rating !== null) ?? [];
   const bestValue =
@@ -358,7 +382,8 @@ export default function ScanPage() {
               )}
               {beers?.map(
                 (beer, i) =>
-                  beer.box && (
+                  beer.box &&
+                  matchesOrigin(beer, originFilter) && (
                     <div
                       key={i}
                       className={`absolute rounded-md border-2 ${
@@ -395,6 +420,29 @@ export default function ScanPage() {
               </p>
             )}
 
+            {beers && beers.length > 0 && (
+              <div className="flex w-full flex-wrap justify-center gap-2">
+                {(["all", "local", "regional", "domestic", "international"] as const).map(
+                  (filter) =>
+                    (filter === "all" || originCount(filter) > 0) && (
+                      <button
+                        key={filter}
+                        onClick={() => setOriginFilter(filter)}
+                        className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                          originFilter === filter
+                            ? "bg-amber-600 text-white"
+                            : "border border-amber-900/20 bg-white text-zinc-600 dark:border-amber-100/20 dark:bg-zinc-900 dark:text-zinc-400"
+                        }`}
+                      >
+                        {filter === "all"
+                          ? `All (${beers.length})`
+                          : `${ORIGIN_LABELS[filter]} (${originCount(filter)})`}
+                      </button>
+                    )
+                )}
+              </div>
+            )}
+
             {recBeer && rec && (
               <div className="w-full rounded-2xl border-2 border-violet-400 bg-white p-4 dark:bg-zinc-900">
                 <p className="font-semibold text-violet-700 dark:text-violet-300">
@@ -408,9 +456,15 @@ export default function ScanPage() {
               </div>
             )}
 
-            {sortedBeers && sortedBeers.length > 0 && (
+            {sortedBeers && sortedBeers.length > 0 && visibleBeers?.length === 0 && (
+              <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
+                No {originFilter} beers in this scan — tap All to see everything.
+              </p>
+            )}
+
+            {visibleBeers && visibleBeers.length > 0 && (
               <ul className="w-full divide-y divide-amber-900/10 rounded-2xl bg-white shadow-sm dark:divide-amber-100/10 dark:bg-zinc-900">
-                {sortedBeers.map((beer, i) => (
+                {visibleBeers.map((beer, i) => (
                   <li key={i} className="flex items-start gap-3 px-4 py-3">
                     <span
                       className={`mt-0.5 min-w-14 rounded-full px-2 py-0.5 text-center text-sm font-bold ${
@@ -452,7 +506,8 @@ export default function ScanPage() {
                           </span>
                         )}
                         {beer.price !== null && `$${beer.price.toFixed(2)} · `}
-                        {beer.style} ·{" "}
+                        {beer.style}
+                        {beer.breweryLocation !== null && ` · ${beer.breweryLocation}`} ·{" "}
                         {beer.ratingSource === "live"
                           ? [
                               beer.untappd !== null && `Untappd ${beer.untappd.toFixed(1)}`,

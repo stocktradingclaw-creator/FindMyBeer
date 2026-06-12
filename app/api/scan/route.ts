@@ -30,6 +30,16 @@ const BeerSchema = z.object({
     .describe(
       "Shelf price in dollars if a price tag is clearly visible and attributable to this beer, else null"
     ),
+  breweryLocation: z
+    .string()
+    .nullable()
+    .describe("The brewery's home city and state/country from your knowledge, else null"),
+  origin: z
+    .enum(["local", "regional", "domestic", "international"])
+    .nullable()
+    .describe(
+      "Most specific bucket relative to the drinker's location, per the prompt's rules; null if unknown"
+    ),
   box: z
     .object({
       x: z.number().describe("Left edge as a fraction of image width, 0-1"),
@@ -83,8 +93,11 @@ function seasonFor(date: Date): string {
   return "fall";
 }
 
-function buildPrompt(taste: string | null): string {
+function buildPrompt(taste: string | null, location: string | null): string {
   const today = new Date();
+  const originRules = location
+    ? `The drinker is in ${location}. Classify into the MOST specific bucket that applies: "local" = brewed in roughly the same metro area or within ~75 miles; "regional" = same state or a neighboring state; "domestic" = same country; "international" = a different country.`
+    : `No drinker location was given. Use "domestic" vs "international" relative to the country this store appears to be in (assume the United States if unclear); never use "local" or "regional".`;
   return `This photo shows a beer shelf, fridge, or display. Identify every distinct beer (or cider/seltzer) whose label you can read or recognize.
 
 For each distinct beer return one entry:
@@ -93,6 +106,8 @@ For each distinct beer return one entry:
 - ratingBasis: one short sentence (e.g. "Widely reviewed flagship IPA with a strong reputation").
 - confidence in the identification.
 - price: the dollar price from a shelf tag, but only when a tag is clearly visible and clearly belongs to this beer. Null otherwise.
+- breweryLocation: the brewery's home city and state/country, from your knowledge. Null if you don't know the brewery.
+- origin: ${originRules} Null when the brewery's location is unknown.
 - box: the approximate bounding box of one representative facing, in normalized 0-1 coordinates.
 
 Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.
@@ -124,13 +139,16 @@ export async function POST(req: Request) {
 
   let image: unknown;
   let taste: unknown;
+  let location: unknown;
   try {
-    ({ image, taste } = await req.json());
+    ({ image, taste, location } = await req.json());
   } catch {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
   const tasteText =
     typeof taste === "string" && taste.trim() ? taste.slice(0, 1500) : null;
+  const locationText =
+    typeof location === "string" && location.trim() ? location.slice(0, 100) : null;
 
   const match =
     typeof image === "string"
@@ -160,7 +178,7 @@ export async function POST(req: Request) {
               type: "image",
               source: { type: "base64", media_type: mediaType, data },
             },
-            { type: "text", text: buildPrompt(tasteText) },
+            { type: "text", text: buildPrompt(tasteText, locationText) },
           ],
         },
       ],

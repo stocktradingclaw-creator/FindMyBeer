@@ -19,6 +19,7 @@ export type TasteProfile = {
   favoriteStyles: string[];
   adventurousness: "stick" | "balanced" | "explore";
   priceSensitivity: "low" | "medium" | "high";
+  location?: string; // e.g. "Denver, CO" — used to classify beer origins
   styleFeedback: Record<string, number>; // style -> net thumbs over time
 };
 

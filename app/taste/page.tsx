@@ -29,6 +29,7 @@ export default function TastePage() {
     useState<TasteProfile["adventurousness"]>("balanced");
   const [priceSensitivity, setPriceSensitivity] =
     useState<TasteProfile["priceSensitivity"]>("medium");
+  const [location, setLocation] = useState("");
 
   useEffect(() => {
     const existing = loadTaste();
@@ -37,6 +38,7 @@ export default function TastePage() {
       setStyles(existing.favoriteStyles);
       setAdventurousness(existing.adventurousness);
       setPriceSensitivity(existing.priceSensitivity);
+      setLocation(existing.location ?? "");
     }
   }, []);
 
@@ -51,6 +53,7 @@ export default function TastePage() {
       favoriteStyles: styles,
       adventurousness,
       priceSensitivity,
+      location: location.trim(),
       styleFeedback: loadTaste()?.styleFeedback ?? {},
     });
     router.push("/scan");
@@ -141,6 +144,22 @@ export default function TastePage() {
               {opt.label}
             </label>
           ))}
+        </fieldset>
+
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 font-semibold text-zinc-900 dark:text-zinc-50">
+            Where are you? <span className="font-normal text-zinc-400">(optional)</span>
+          </legend>
+          <input
+            type="text"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            placeholder="e.g. Denver, CO"
+            className="h-11 rounded-full border border-amber-900/20 bg-white px-5 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-amber-600 dark:border-amber-100/20 dark:bg-zinc-900 dark:text-zinc-50"
+          />
+          <p className="text-xs text-zinc-400 dark:text-zinc-500">
+            Lets scans tag each beer as local, regional, domestic, or international.
+          </p>
         </fieldset>
 
         <button

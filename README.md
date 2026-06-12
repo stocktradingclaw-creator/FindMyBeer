@@ -25,10 +25,14 @@ the top pick highlighted.
   the best rating-per-dollar pick with a 💰 badge. Scans are saved to a
   local history page (`/history`, stored only on the device).
 - A taste profile (`/taste`: favorite styles, adventurousness, price
-  sensitivity) plus 👍/👎 feedback on scanned beers — all on-device —
-  feeds every scan, and the model returns a 🎯 personal pick that weighs
-  taste fit, quality, seasonal fit, novelty, and price (price never
-  deciding alone).
+  sensitivity, your location) plus 👍/👎 feedback on scanned beers — all
+  on-device — feeds every scan, and the model returns a 🎯 personal pick
+  that weighs taste fit, quality, seasonal fit, novelty, and price (price
+  never deciding alone).
+- Each beer is tagged with its brewery's home and an origin bucket
+  relative to your location — filter results by Local, Regional,
+  Domestic, or International (tiers nest: local counts as regional and
+  domestic).
 
 > **Why not the Untappd API?** It's closed to new applications; the only
 > current option is an Untappd for Business subscription. Web search of
