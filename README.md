@@ -12,14 +12,22 @@ the top pick highlighted.
 - The `/scan` page opens your camera (rear camera on phones) or accepts an
   uploaded photo, downscales it client-side, and sends it to `/api/scan`.
 - The API route sends the image to **Claude (Opus 4.8)** with vision and a
-  structured-output schema. The model identifies each beer, estimates its
-  rating out of 5, and returns a normalized bounding box per beer.
-- The UI draws rating badges over the captured frame and lists the beers
-  sorted best-first.
+  structured-output schema. The model identifies each beer, reads visible
+  price tags, and returns a normalized bounding box per beer.
+- Each newly seen beer gets its real community score looked up via Claude's
+  web-search tool (~1¢ per search) and cached in `.ratings-cache.json`, so
+  repeat scans are instant and free. The lookup is time-boxed: if it isn't
+  done in 75s the scan responds with knowledge-based estimates (labeled
+  "est.") while the search finishes in the background and fills the cache.
+- The UI draws rating badges over the captured frame, lists the beers
+  best-first with live/est labels and prices, and tags the best
+  rating-per-dollar pick with a 💰 badge. Scans are saved to a local
+  history page (`/history`, stored only on the device).
 
-> **Honesty note:** ratings are AI estimates of community scores from the
-> model's knowledge — BeerAdvocate has no public API. Treat them as a guide.
-> Wiring in live rating data (e.g. the Untappd API) is a natural next step.
+> **Why not the Untappd API?** It's closed to new applications; the only
+> current option is an Untappd for Business subscription. Web search of
+> public score pages plus caching covers the same need for ~1¢ per
+> never-before-seen beer.
 
 ## Getting started
 

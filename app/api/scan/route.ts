@@ -1,9 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import { lookupLiveRatings, ratingKey, type LiveRating } from "@/lib/ratings";
 
-// Vision + reasoning over a full shelf photo can take a while on Vercel.
-export const maxDuration = 60;
+// Vision pass + web-search rating lookup can take a while on Vercel.
+export const maxDuration = 120;
 
 const BeerSchema = z.object({
   name: z.string().describe("The beer's name as printed on the label"),
@@ -22,6 +23,12 @@ const BeerSchema = z.object({
     .enum(["high", "medium", "low"])
     .describe(
       "high = label clearly legible and beer well known; medium = label partially legible or beer less known; low = a guess"
+    ),
+  price: z
+    .number()
+    .nullable()
+    .describe(
+      "Shelf price in dollars if a price tag is clearly visible and attributable to this beer, else null"
     ),
   box: z
     .object({
@@ -42,6 +49,12 @@ const ScanResultSchema = z.object({
 
 export type ScanResult = z.infer<typeof ScanResultSchema>;
 
+export type ScanBeer = ScanResult["beers"][number] & {
+  ratingSource: "live" | "estimate";
+};
+
+export type ScanResponse = { beers: ScanBeer[] };
+
 const PROMPT = `This photo shows a beer shelf, fridge, or display. Identify every distinct beer (or cider/seltzer) whose label you can read or recognize.
 
 For each distinct beer return one entry:
@@ -49,12 +62,12 @@ For each distinct beer return one entry:
 - rating: your best estimate of its enthusiast community score out of 5, the way BeerAdvocate or Untappd users rate it. Use null if you can't identify the beer well enough to estimate. These are estimates from your knowledge, so calibrate honestly rather than clustering everything at 4.
 - ratingBasis: one short sentence (e.g. "Widely reviewed flagship IPA with a strong reputation").
 - confidence in the identification.
+- price: the dollar price from a shelf tag, but only when a tag is clearly visible and clearly belongs to this beer. Null otherwise.
 - box: the approximate bounding box of one representative facing, in normalized 0-1 coordinates.
 
 Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.`;
 
-const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
-type MediaType = (typeof MEDIA_TYPES)[number];
+type MediaType = "image/jpeg" | "image/png" | "image/webp";
 
 export async function POST(req: Request) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -124,7 +137,47 @@ export async function POST(req: Request) {
       );
     }
 
-    return Response.json(parsed);
+    // Best-effort upgrade from knowledge-based estimates to real, current
+    // community scores found via web search (cached per beer). Low-confidence
+    // identifications aren't worth a search. The lookup is time-boxed: past
+    // the deadline the scan responds with estimates while the lookup keeps
+    // running and fills the cache for the next scan. (On serverless hosts the
+    // background half may be frozen after the response is sent.)
+    const candidates = parsed.beers
+      .filter((b) => b.confidence !== "low")
+      .map(({ name, brewery }) => ({ name, brewery }));
+    let live = new Map<string, LiveRating>();
+    if (candidates.length > 0) {
+      const t0 = Date.now();
+      const lookup = lookupLiveRatings(candidates);
+      lookup
+        .then((m) => console.log(`scan: rating lookup finished in ${Date.now() - t0}ms (${m.size} beers)`))
+        .catch((err) => console.error("scan: rating lookup failed:", err));
+      live = await Promise.race([
+        lookup.catch(() => new Map<string, LiveRating>()),
+        new Promise<Map<string, LiveRating>>((resolve) =>
+          setTimeout(() => resolve(new Map()), 75_000)
+        ),
+      ]);
+      if (live.size === 0) {
+        console.log(`scan: serving estimates (lookup not ready after ${Date.now() - t0}ms)`);
+      }
+    }
+
+    const beers: ScanBeer[] = parsed.beers.map((beer) => {
+      const found = live.get(ratingKey(beer.name, beer.brewery));
+      if (found && found.rating !== null) {
+        return {
+          ...beer,
+          rating: found.rating,
+          ratingBasis: `${found.source ?? "Community"} score, looked up live`,
+          ratingSource: "live",
+        };
+      }
+      return { ...beer, ratingSource: "estimate" };
+    });
+
+    return Response.json({ beers } satisfies ScanResponse);
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
       return Response.json(

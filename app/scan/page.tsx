@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ScanResult } from "../api/scan/route";
+import type { ScanResponse } from "../api/scan/route";
+import { saveHistoryEntry } from "@/lib/history";
 
-type Beer = ScanResult["beers"][number];
+type Beer = ScanResponse["beers"][number];
 
 const MAX_EDGE = 2000; // px — keeps image tokens reasonable while labels stay legible
 
@@ -124,7 +126,9 @@ export default function ScanPage() {
       if (!res.ok) {
         setError(json.error ?? "Scan failed. Try again.");
       } else {
-        setBeers((json as ScanResult).beers);
+        const found = (json as ScanResponse).beers;
+        setBeers(found);
+        if (found.length > 0) recordHistory(dataUrl, found);
       }
     } catch (err) {
       setError(
@@ -146,6 +150,33 @@ export default function ScanPage() {
 
   function markPicking() {
     sessionStorage.setItem(PICK_FLAG, String(Date.now()));
+  }
+
+  function recordHistory(dataUrl: string, found: Beer[]) {
+    // Fire-and-forget: shrink the frame to a thumbnail and store the scan.
+    const img = new Image();
+    img.onload = () => {
+      const scale = 240 / img.width;
+      const canvas = document.createElement("canvas");
+      canvas.width = 240;
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      saveHistoryEntry({
+        ts: Date.now(),
+        thumb: canvas.toDataURL("image/jpeg", 0.6),
+        beers: found.map(({ name, brewery, style, rating, ratingSource, price }) => ({
+          name,
+          brewery,
+          style,
+          rating,
+          ratingSource,
+          price,
+        })),
+      });
+    };
+    img.src = dataUrl;
   }
 
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -173,13 +204,29 @@ export default function ScanPage() {
   const sortedBeers = beers
     ? [...beers].sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1))
     : null;
+  const pricedBeers =
+    beers?.filter((b) => b.price !== null && b.price > 0 && b.rating !== null) ?? [];
+  const bestValue =
+    pricedBeers.length >= 2
+      ? pricedBeers.reduce((best, b) =>
+          b.rating! / b.price! > best.rating! / best.price! ? b : best
+        )
+      : null;
 
   return (
     <div className="flex flex-col flex-1 items-center bg-amber-50 font-sans dark:bg-zinc-950">
       <main className="flex w-full max-w-2xl flex-col items-center gap-6 px-4 py-10">
-        <h1 className="text-3xl font-bold tracking-tight text-amber-900 dark:text-amber-100">
-          🍺 Scan the shelf
-        </h1>
+        <div className="flex w-full items-baseline justify-center gap-4">
+          <h1 className="text-3xl font-bold tracking-tight text-amber-900 dark:text-amber-100">
+            🍺 Scan the shelf
+          </h1>
+          <Link
+            href="/history"
+            className="text-sm font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+          >
+            History
+          </Link>
+        </div>
         <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
           Point your camera at a beer shelf and scan. Each beer gets an
           approximate community rating out of 5 — the best picks are
@@ -325,8 +372,25 @@ export default function ScanPage() {
                           {" "}
                           · {beer.brewery}
                         </span>
+                        {beer === bestValue && (
+                          <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
+                            💰 Best value
+                          </span>
+                        )}
                       </p>
                       <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                        {beer.rating !== null && (
+                          <span
+                            className={
+                              beer.ratingSource === "live"
+                                ? "font-medium text-emerald-600 dark:text-emerald-400"
+                                : "text-zinc-400 dark:text-zinc-500"
+                            }
+                          >
+                            {beer.ratingSource === "live" ? "live · " : "est. · "}
+                          </span>
+                        )}
+                        {beer.price !== null && `$${beer.price.toFixed(2)} · `}
                         {beer.style} · {beer.ratingBasis}
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
                       </p>
@@ -347,8 +411,8 @@ export default function ScanPage() {
 
             {sortedBeers && sortedBeers.length > 0 && (
               <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">
-                Ratings are AI estimates of community scores (BeerAdvocate/Untappd
-                style), not live data — treat them as a guide, not gospel.
+                Ratings marked <span className="text-emerald-600 dark:text-emerald-400">live</span>{" "}
+                were looked up on the web just now; <em>est.</em> are AI estimates.
               </p>
             )}
           </div>
