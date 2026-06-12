@@ -130,6 +130,22 @@ export default function ScanPage() {
     startCamera();
   }
 
+  async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    setProcessing(true);
+    try {
+      const dataUrl = await fileToJpegDataUrl(file);
+      setProcessing(false);
+      await scan(dataUrl);
+    } catch (err) {
+      setProcessing(false);
+      setError(err instanceof Error ? err.message : "Couldn't read that file.");
+    }
+  }
+
   const topRating =
     beers?.reduce<number | null>(
       (best, b) => (b.rating !== null && (best === null || b.rating > best) ? b.rating : best),
@@ -189,28 +205,22 @@ export default function ScanPage() {
                 </button>
               )}
               <label className="flex h-12 cursor-pointer items-center rounded-full border border-amber-900/20 bg-white px-6 text-base text-zinc-700 hover:border-amber-600 dark:border-amber-100/20 dark:bg-zinc-900 dark:text-zinc-300">
-                Upload a photo
+                📷 Take photo
                 <input
                   type="file"
                   accept="image/*"
                   capture="environment"
                   className="hidden"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    setError(null);
-                    setProcessing(true);
-                    try {
-                      const dataUrl = await fileToJpegDataUrl(file);
-                      setProcessing(false);
-                      await scan(dataUrl);
-                    } catch (err) {
-                      setProcessing(false);
-                      setError(err instanceof Error ? err.message : "Couldn't read that file.");
-                    } finally {
-                      e.target.value = "";
-                    }
-                  }}
+                  onChange={onPickFile}
+                />
+              </label>
+              <label className="flex h-12 cursor-pointer items-center rounded-full border border-amber-900/20 bg-white px-6 text-base text-zinc-700 hover:border-amber-600 dark:border-amber-100/20 dark:bg-zinc-900 dark:text-zinc-300">
+                🖼️ From gallery
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={onPickFile}
                 />
               </label>
             </div>
