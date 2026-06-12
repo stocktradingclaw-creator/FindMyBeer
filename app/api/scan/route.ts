@@ -51,6 +51,10 @@ export type ScanResult = z.infer<typeof ScanResultSchema>;
 
 export type ScanBeer = ScanResult["beers"][number] & {
   ratingSource: "live" | "estimate";
+  // Per-site live scores (out of 5); null when not found or not looked up.
+  // When live, `rating` is the consolidated score: the average of these.
+  untappd: number | null;
+  beerAdvocate: number | null;
 };
 
 export type ScanResponse = { beers: ScanBeer[] };
@@ -166,15 +170,22 @@ export async function POST(req: Request) {
 
     const beers: ScanBeer[] = parsed.beers.map((beer) => {
       const found = live.get(ratingKey(beer.name, beer.brewery));
-      if (found && found.rating !== null) {
+      const scores = [found?.untappd, found?.beerAdvocate].filter(
+        (s): s is number => typeof s === "number"
+      );
+      if (found && scores.length > 0) {
+        const consolidated =
+          Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
         return {
           ...beer,
-          rating: found.rating,
-          ratingBasis: `${found.source ?? "Community"} score, looked up live`,
+          rating: consolidated,
+          untappd: found.untappd,
+          beerAdvocate: found.beerAdvocate,
+          ratingBasis: "Consolidated from live site scores",
           ratingSource: "live",
         };
       }
-      return { ...beer, ratingSource: "estimate" };
+      return { ...beer, untappd: null, beerAdvocate: null, ratingSource: "estimate" };
     });
 
     return Response.json({ beers } satisfies ScanResponse);

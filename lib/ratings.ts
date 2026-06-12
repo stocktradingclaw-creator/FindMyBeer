@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 export type LiveRating = {
-  rating: number | null; // out of 5; null = looked up but not found
-  source: string | null; // e.g. "BeerAdvocate", "Untappd"
+  untappd: number | null; // out of 5; null = looked up but not found
+  beerAdvocate: number | null; // out of 5; null = looked up but not found
   fetchedAt: number;
 };
 
@@ -64,8 +64,11 @@ export async function lookupLiveRatings(
     if (seen.has(key)) continue;
     seen.add(key);
     const hit = cache[key];
-    const ttl = hit?.rating === null ? NULL_TTL_MS : TTL_MS;
-    if (hit && Date.now() - hit.fetchedAt < ttl) {
+    // Entries from the old single-score cache shape count as misses.
+    const validShape = hit && "untappd" in hit && "beerAdvocate" in hit;
+    const notFound = hit?.untappd === null && hit?.beerAdvocate === null;
+    const ttl = notFound ? NULL_TTL_MS : TTL_MS;
+    if (validShape && Date.now() - hit.fetchedAt < ttl) {
       result.set(key, hit);
     } else {
       misses.push(beer);
@@ -76,12 +79,16 @@ export async function lookupLiveRatings(
   const list = misses
     .map((b, i) => `${i + 1}. "${b.name}" by ${b.brewery}`)
     .join("\n");
-  const prompt = `Look up the current community rating for each of these beers:
+  const prompt = `Look up the current community ratings for each of these beers:
 ${list}
 
-Search BeerAdvocate and/or Untappd (one search can cover several beers when efficient, so use as few searches as you can). For each beer report its community score normalized to a 0-5 scale (BeerAdvocate and Untappd scores are already out of 5). If a couple of attempts don't surface a credible score for a beer, report null for it rather than continuing to search.
+For each beer find BOTH of these scores when available (both sites rate out of 5):
+- its Untappd community score
+- its BeerAdvocate community score
 
-End your reply with exactly one fenced \`\`\`json block: an array with one object per beer, in the same order as the list above, shaped as {"index": <1-based list number>, "rating": <number or null>, "source": <"BeerAdvocate" | "Untappd" | other site name | null>}.`;
+A single search like "<beer name> untappd beeradvocate rating" often surfaces both sites at once, so use as few searches as you can. If a couple of attempts don't surface a credible score from one of the sites, report null for that score rather than continuing to search.
+
+End your reply with exactly one fenced \`\`\`json block: an array with one object per beer, in the same order as the list above, shaped as {"index": <1-based list number>, "untappd": <number or null>, "beerAdvocate": <number or null>}.`;
 
   const client = new Anthropic();
   let messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
@@ -110,18 +117,20 @@ End your reply with exactly one fenced \`\`\`json block: an array with one objec
     .join("\n");
   const rows = extractJsonArray(text) ?? [];
 
+  const asScore = (value: unknown): number | null =>
+    typeof value === "number" && value >= 0 && value <= 5
+      ? Math.round(value * 10) / 10
+      : null;
+
   const now = Date.now();
   for (const row of rows) {
     if (typeof row !== "object" || row === null) continue;
-    const { index, rating, source } = row as Record<string, unknown>;
+    const { index, untappd, beerAdvocate } = row as Record<string, unknown>;
     const beer = typeof index === "number" ? misses[index - 1] : undefined;
     if (!beer) continue;
     const entry: LiveRating = {
-      rating:
-        typeof rating === "number" && rating >= 0 && rating <= 5
-          ? Math.round(rating * 10) / 10
-          : null,
-      source: typeof source === "string" ? source : null,
+      untappd: asScore(untappd),
+      beerAdvocate: asScore(beerAdvocate),
       fetchedAt: now,
     };
     const key = ratingKey(beer.name, beer.brewery);

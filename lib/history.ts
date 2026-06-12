@@ -4,7 +4,9 @@ export type HistoryBeer = {
   name: string;
   brewery: string;
   style: string;
-  rating: number | null;
+  rating: number | null; // consolidated when live
+  untappd: number | null;
+  beerAdvocate: number | null;
   ratingSource: "live" | "estimate";
   price: number | null;
 };

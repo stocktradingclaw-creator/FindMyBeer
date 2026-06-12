@@ -166,14 +166,18 @@ export default function ScanPage() {
       saveHistoryEntry({
         ts: Date.now(),
         thumb: canvas.toDataURL("image/jpeg", 0.6),
-        beers: found.map(({ name, brewery, style, rating, ratingSource, price }) => ({
-          name,
-          brewery,
-          style,
-          rating,
-          ratingSource,
-          price,
-        })),
+        beers: found.map(
+          ({ name, brewery, style, rating, untappd, beerAdvocate, ratingSource, price }) => ({
+            name,
+            brewery,
+            style,
+            rating,
+            untappd,
+            beerAdvocate,
+            ratingSource,
+            price,
+          })
+        ),
       });
     };
     img.src = dataUrl;
@@ -391,7 +395,16 @@ export default function ScanPage() {
                           </span>
                         )}
                         {beer.price !== null && `$${beer.price.toFixed(2)} · `}
-                        {beer.style} · {beer.ratingBasis}
+                        {beer.style} ·{" "}
+                        {beer.ratingSource === "live"
+                          ? [
+                              beer.untappd !== null && `Untappd ${beer.untappd.toFixed(1)}`,
+                              beer.beerAdvocate !== null &&
+                                `BeerAdvocate ${beer.beerAdvocate.toFixed(1)}`,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")
+                          : beer.ratingBasis}
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
                       </p>
                     </div>
@@ -411,8 +424,9 @@ export default function ScanPage() {
 
             {sortedBeers && sortedBeers.length > 0 && (
               <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">
-                Ratings marked <span className="text-emerald-600 dark:text-emerald-400">live</span>{" "}
-                were looked up on the web just now; <em>est.</em> are AI estimates.
+                On <span className="text-emerald-600 dark:text-emerald-400">live</span> beers the ★
+                is the consolidated score — the average of the Untappd and BeerAdvocate scores
+                found just now. <em>est.</em> means an AI estimate.
               </p>
             )}
           </div>
