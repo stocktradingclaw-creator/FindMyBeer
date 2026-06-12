@@ -1,7 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { auth } from "@/auth";
+import { db, hasDb } from "@/lib/db";
 import { lookupLiveRatings, ratingKey, type LiveRating } from "@/lib/ratings";
+import { tasteProfiles } from "@/lib/schema";
+import { tasteSummary, type TasteProfile } from "@/lib/taste";
 
 // Vision pass + web-search rating lookup can take a while on Vercel.
 export const maxDuration = 120;
@@ -145,10 +150,30 @@ export async function POST(req: Request) {
   } catch {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
-  const tasteText =
+  let tasteText =
     typeof taste === "string" && taste.trim() ? taste.slice(0, 1500) : null;
-  const locationText =
+  let locationText =
     typeof location === "string" && location.trim() ? location.slice(0, 100) : null;
+
+  // Signed-in users: their server-side profile is the source of truth,
+  // overriding whatever the client sent.
+  const session = await auth().catch(() => null);
+  if (session?.user?.id && hasDb()) {
+    const row = await db().query.tasteProfiles.findFirst({
+      where: eq(tasteProfiles.userId, session.user.id),
+    });
+    if (row) {
+      const profile: TasteProfile = {
+        favoriteStyles: row.favoriteStyles,
+        adventurousness: row.adventurousness as TasteProfile["adventurousness"],
+        priceSensitivity: row.priceSensitivity as TasteProfile["priceSensitivity"],
+        location: row.location,
+        styleFeedback: row.styleFeedback,
+      };
+      tasteText = tasteSummary(profile).slice(0, 1500);
+      locationText = row.location.trim() || null;
+    }
+  }
 
   const match =
     typeof image === "string"

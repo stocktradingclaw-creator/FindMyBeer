@@ -39,11 +39,31 @@ the top pick highlighted.
 > public score pages plus caching covers the same need for ~1¢ per
 > never-before-seen beer.
 
+## Accounts
+
+Sign-up (`/signup`) and sign-in (`/login`) are powered by Auth.js (email +
+password, plus Google when configured) with user data in Neon Postgres:
+taste profiles, 👍/👎 style feedback, and scan history are stored per user
+and follow them across devices; the scan API resolves the signed-in user's
+profile server-side. The beer-ratings cache is shared across all users.
+Signed-out visitors get the full app with on-device storage instead.
+
+Setup (one time):
+
+1. Create a free Postgres database at [neon.tech](https://neon.tech), copy
+   the connection string into `DATABASE_URL` in `.env.local`.
+2. `npm run db:push` to create the tables.
+3. Optional Google sign-in: create OAuth credentials at
+   [console.cloud.google.com](https://console.cloud.google.com) (redirect
+   URI: `<your-origin>/api/auth/callback/google`) and set
+   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`. The button appears
+   automatically when both are set.
+
 ## Getting started
 
 ```bash
 npm install
-cp .env.example .env.local   # then add your ANTHROPIC_API_KEY
+cp .env.example .env.local   # then fill in the values (see Accounts above)
 npm run dev
 ```
 

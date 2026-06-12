@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
 import {
   BEER_STYLES,
   loadTaste,
@@ -24,23 +25,36 @@ const PRICE_OPTIONS: { value: TasteProfile["priceSensitivity"]; label: string }[
 
 export default function TastePage() {
   const router = useRouter();
+  const { data: session, status: sessionStatus } = useSession();
+  const authed = Boolean(session?.user);
   const [styles, setStyles] = useState<string[]>([]);
   const [adventurousness, setAdventurousness] =
     useState<TasteProfile["adventurousness"]>("balanced");
   const [priceSensitivity, setPriceSensitivity] =
     useState<TasteProfile["priceSensitivity"]>("medium");
   const [location, setLocation] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const existing = loadTaste();
-    if (existing) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- prefill from localStorage, only readable after mount
+    if (sessionStatus === "loading") return;
+    let cancelled = false;
+    (async () => {
+      const existing = authed
+        ? await fetch("/api/taste")
+            .then((r) => r.json())
+            .then((j) => (j.profile as TasteProfile | null) ?? null)
+            .catch(() => null)
+        : loadTaste();
+      if (cancelled || !existing) return;
       setStyles(existing.favoriteStyles);
       setAdventurousness(existing.adventurousness);
       setPriceSensitivity(existing.priceSensitivity);
       setLocation(existing.location ?? "");
-    }
-  }, []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionStatus, authed]);
 
   function toggleStyle(style: string) {
     setStyles((prev) =>
@@ -48,14 +62,28 @@ export default function TastePage() {
     );
   }
 
-  function save() {
-    saveTaste({
+  async function save() {
+    const profile: TasteProfile = {
       favoriteStyles: styles,
       adventurousness,
       priceSensitivity,
       location: location.trim(),
       styleFeedback: loadTaste()?.styleFeedback ?? {},
-    });
+    };
+    if (authed) {
+      setBusy(true);
+      try {
+        await fetch("/api/taste", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profile),
+        });
+      } finally {
+        setBusy(false);
+      }
+    } else {
+      saveTaste(profile);
+    }
     router.push("/scan");
   }
 
@@ -164,10 +192,21 @@ export default function TastePage() {
 
         <button
           onClick={save}
-          className="h-12 rounded-full bg-amber-600 px-8 text-base font-medium text-white transition-colors hover:bg-amber-700"
+          disabled={busy}
+          className="h-12 rounded-full bg-amber-600 px-8 text-base font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-60"
         >
-          Save &amp; scan
+          {busy ? "Saving…" : "Save & scan"}
         </button>
+
+        {sessionStatus !== "loading" && !authed && (
+          <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">
+            Saved on this device only.{" "}
+            <Link href="/signup" className="font-medium text-amber-700 dark:text-amber-300">
+              Create an account
+            </Link>{" "}
+            to keep your taste everywhere and improve picks over time.
+          </p>
+        )}
       </main>
     </div>
   );

@@ -1,6 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { inArray } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
+import { db, hasDb } from "./db";
+import { ratingsCache } from "./schema";
 
 export type LiveRating = {
   untappd: number | null; // out of 5; null = looked up but not found
@@ -8,9 +11,9 @@ export type LiveRating = {
   fetchedAt: number;
 };
 
-// Local JSON cache so each beer is only ever searched once (per TTL).
-// Note: on serverless hosts the filesystem is ephemeral, so this cache only
-// persists when running on a real machine.
+// The cache lives in Postgres when a database is configured (shared across
+// all users — one user's lookup benefits everyone). Without a database it
+// falls back to a local JSON file, which only persists on a real machine.
 const CACHE_PATH = path.join(process.cwd(), ".ratings-cache.json");
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // Not-found results retry much sooner — a miss may just be a flaky search.
@@ -21,17 +24,67 @@ export function ratingKey(name: string, brewery: string): string {
   return `${brewery.trim().toLowerCase()}|${name.trim().toLowerCase()}`;
 }
 
-function loadCache(): Record<string, LiveRating> {
+async function loadCachedRatings(keys: string[]): Promise<Record<string, LiveRating>> {
+  if (keys.length === 0) return {};
+  if (hasDb()) {
+    const rows = await db()
+      .select()
+      .from(ratingsCache)
+      .where(inArray(ratingsCache.key, keys));
+    return Object.fromEntries(
+      rows.map((row) => [
+        row.key,
+        {
+          untappd: row.untappd,
+          beerAdvocate: row.beerAdvocate,
+          fetchedAt: row.fetchedAt.getTime(),
+        },
+      ])
+    );
+  }
   try {
-    return JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
+    const file = JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
+    const out: Record<string, LiveRating> = {};
+    for (const key of keys) {
+      const hit = file[key];
+      if (hit && "untappd" in hit && "beerAdvocate" in hit) out[key] = hit;
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
-function saveCache(cache: Record<string, LiveRating>) {
+async function saveCachedRatings(entries: Record<string, LiveRating>): Promise<void> {
   try {
-    fs.writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
+    if (hasDb()) {
+      for (const [key, entry] of Object.entries(entries)) {
+        await db()
+          .insert(ratingsCache)
+          .values({
+            key,
+            untappd: entry.untappd,
+            beerAdvocate: entry.beerAdvocate,
+            fetchedAt: new Date(entry.fetchedAt),
+          })
+          .onConflictDoUpdate({
+            target: ratingsCache.key,
+            set: {
+              untappd: entry.untappd,
+              beerAdvocate: entry.beerAdvocate,
+              fetchedAt: new Date(entry.fetchedAt),
+            },
+          });
+      }
+      return;
+    }
+    let file: Record<string, LiveRating> = {};
+    try {
+      file = JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
+    } catch {
+      /* fresh file */
+    }
+    fs.writeFileSync(CACHE_PATH, JSON.stringify({ ...file, ...entries }, null, 2));
   } catch (err) {
     console.error("Couldn't persist ratings cache:", err);
   }
@@ -54,21 +107,19 @@ function extractJsonArray(text: string): unknown[] | null {
 export async function lookupLiveRatings(
   beers: { name: string; brewery: string }[]
 ): Promise<Map<string, LiveRating>> {
-  const cache = loadCache();
+  const unique = new Map<string, { name: string; brewery: string }>();
+  for (const beer of beers) {
+    unique.set(ratingKey(beer.name, beer.brewery), beer);
+  }
+  const cache = await loadCachedRatings([...unique.keys()]);
   const result = new Map<string, LiveRating>();
   const misses: { name: string; brewery: string }[] = [];
-  const seen = new Set<string>();
 
-  for (const beer of beers) {
-    const key = ratingKey(beer.name, beer.brewery);
-    if (seen.has(key)) continue;
-    seen.add(key);
+  for (const [key, beer] of unique) {
     const hit = cache[key];
-    // Entries from the old single-score cache shape count as misses.
-    const validShape = hit && "untappd" in hit && "beerAdvocate" in hit;
     const notFound = hit?.untappd === null && hit?.beerAdvocate === null;
     const ttl = notFound ? NULL_TTL_MS : TTL_MS;
-    if (validShape && Date.now() - hit.fetchedAt < ttl) {
+    if (hit && Date.now() - hit.fetchedAt < ttl) {
       result.set(key, hit);
     } else {
       misses.push(beer);
@@ -123,6 +174,7 @@ End your reply with exactly one fenced \`\`\`json block: an array with one objec
       : null;
 
   const now = Date.now();
+  const fresh: Record<string, LiveRating> = {};
   for (const row of rows) {
     if (typeof row !== "object" || row === null) continue;
     const { index, untappd, beerAdvocate } = row as Record<string, unknown>;
@@ -134,9 +186,9 @@ End your reply with exactly one fenced \`\`\`json block: an array with one objec
       fetchedAt: now,
     };
     const key = ratingKey(beer.name, beer.brewery);
-    cache[key] = entry;
+    fresh[key] = entry;
     result.set(key, entry);
   }
-  saveCache(cache);
+  await saveCachedRatings(fresh);
   return result;
 }

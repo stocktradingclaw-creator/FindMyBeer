@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { signOut, useSession } from "next-auth/react";
 import type { ScanResponse } from "../api/scan/route";
-import { saveHistoryEntry } from "@/lib/history";
+import { saveHistoryEntry, type HistoryBeer } from "@/lib/history";
 import { loadTaste, recordStyleFeedback, tasteSummary } from "@/lib/taste";
 
 type Beer = ScanResponse["beers"][number];
@@ -74,6 +75,8 @@ function fileToJpegDataUrl(file: File): Promise<string> {
 }
 
 export default function ScanPage() {
+  const { data: session, status: sessionStatus } = useSession();
+  const authed = Boolean(session?.user);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
@@ -120,7 +123,6 @@ export default function ScanPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- mount beacon + reload detection must run synchronously on mount
     setMounted(true);
-    setHasTaste(loadTaste() !== null);
     const pickedAt = Number(sessionStorage.getItem(PICK_FLAG));
     sessionStorage.removeItem(PICK_FLAG);
     if (pickedAt && Date.now() - pickedAt < 5 * 60_000) {
@@ -186,16 +188,43 @@ export default function ScanPage() {
   function vote(beer: Beer, value: 1 | -1) {
     const previous = votes[beer.name] ?? 0;
     if (previous === value) return;
-    recordStyleFeedback(beer.style, value - previous);
+    const delta = value - previous;
+    if (authed) {
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ style: beer.style, delta }),
+      }).catch(() => {});
+    } else {
+      recordStyleFeedback(beer.style, delta);
+    }
     setVotes((v) => ({ ...v, [beer.name]: value }));
   }
+
+  useEffect(() => {
+    if (sessionStatus === "loading") return;
+    let cancelled = false;
+    (async () => {
+      const has = authed
+        ? await fetch("/api/taste")
+            .then((r) => r.json())
+            .then((j) => Boolean(j.profile))
+            .catch(() => false)
+        : loadTaste() !== null;
+      if (!cancelled) setHasTaste(has);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionStatus, authed]);
 
   function markPicking() {
     sessionStorage.setItem(PICK_FLAG, String(Date.now()));
   }
 
   function recordHistory(dataUrl: string, found: Beer[]) {
-    // Fire-and-forget: shrink the frame to a thumbnail and store the scan.
+    // Fire-and-forget: shrink the frame to a thumbnail and store the scan —
+    // in the account when signed in, otherwise on this device.
     const img = new Image();
     img.onload = () => {
       const scale = 240 / img.width;
@@ -205,22 +234,28 @@ export default function ScanPage() {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      saveHistoryEntry({
-        ts: Date.now(),
-        thumb: canvas.toDataURL("image/jpeg", 0.6),
-        beers: found.map(
-          ({ name, brewery, style, rating, untappd, beerAdvocate, ratingSource, price }) => ({
-            name,
-            brewery,
-            style,
-            rating,
-            untappd,
-            beerAdvocate,
-            ratingSource,
-            price,
-          })
-        ),
-      });
+      const thumb = canvas.toDataURL("image/jpeg", 0.6);
+      const beers: HistoryBeer[] = found.map(
+        ({ name, brewery, style, rating, untappd, beerAdvocate, ratingSource, price }) => ({
+          name,
+          brewery,
+          style,
+          rating,
+          untappd,
+          beerAdvocate,
+          ratingSource,
+          price,
+        })
+      );
+      if (authed) {
+        fetch("/api/history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thumb, beers }),
+        }).catch(() => {});
+      } else {
+        saveHistoryEntry({ ts: Date.now(), thumb, beers });
+      }
     };
     img.src = dataUrl;
   }
@@ -282,6 +317,22 @@ export default function ScanPage() {
           >
             Taste
           </Link>
+          {sessionStatus !== "loading" &&
+            (authed ? (
+              <button
+                onClick={() => signOut({ redirectTo: "/scan" })}
+                className="text-sm font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+              >
+                Sign out{session?.user?.name ? ` (${session.user.name.split(" ")[0]})` : ""}
+              </button>
+            ) : (
+              <Link
+                href="/login"
+                className="text-sm font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-300"
+              >
+                Sign in
+              </Link>
+            ))}
         </div>
 
         {mounted && !hasTaste && (

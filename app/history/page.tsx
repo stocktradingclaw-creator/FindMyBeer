@@ -2,15 +2,39 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
 import { clearHistory, loadHistory, type HistoryEntry } from "@/lib/history";
 
 export default function HistoryPage() {
+  const { data: session, status: sessionStatus } = useSession();
+  const authed = Boolean(session?.user);
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is only readable client-side, after mount
-    setEntries(loadHistory());
-  }, []);
+    if (sessionStatus === "loading") return;
+    let cancelled = false;
+    (async () => {
+      const loaded = authed
+        ? await fetch("/api/history")
+            .then((r) => r.json())
+            .then((j) => (j.entries as HistoryEntry[] | null) ?? [])
+            .catch(() => [])
+        : loadHistory();
+      if (!cancelled) setEntries(loaded);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionStatus, authed]);
+
+  async function clearAll() {
+    if (authed) {
+      await fetch("/api/history", { method: "DELETE" }).catch(() => {});
+    } else {
+      clearHistory();
+    }
+    setEntries([]);
+  }
 
   return (
     <div className="flex flex-col flex-1 items-center bg-amber-50 font-sans dark:bg-zinc-950">
@@ -29,8 +53,8 @@ export default function HistoryPage() {
 
         {entries && entries.length === 0 && (
           <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
-            No scans yet — scan a shelf and it&apos;ll show up here. History is
-            stored only on this device.
+            No scans yet — scan a shelf and it&apos;ll show up here.{" "}
+            {authed ? "History is saved to your account." : "History is stored only on this device."}
           </p>
         )}
 
@@ -84,10 +108,7 @@ export default function HistoryPage() {
               })}
             </ul>
             <button
-              onClick={() => {
-                clearHistory();
-                setEntries([]);
-              }}
+              onClick={clearAll}
               className="text-sm text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
             >
               Clear history
