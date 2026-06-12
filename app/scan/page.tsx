@@ -21,17 +21,28 @@ function fileToJpegDataUrl(file: File): Promise<string> {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/jpeg", 0.85));
+      try {
+        const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas unavailable on this browser.");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error("Couldn't process that photo."));
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("Couldn't read that image file."));
+      reject(
+        new Error(
+          `Couldn't read that photo (${file.type || "unknown type"}, ${(file.size / 1e6).toFixed(1)}MB). Try retaking it.`
+        )
+      );
     };
     img.src = url;
   });
@@ -43,6 +54,7 @@ export default function ScanPage() {
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [frame, setFrame] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [beers, setBeers] = useState<Beer[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +66,6 @@ export default function ScanPage() {
   }, []);
 
   const startCamera = useCallback(async () => {
-    setCameraError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -69,6 +80,7 @@ export default function ScanPage() {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      setCameraError(null);
       setCameraReady(true);
     } catch {
       setCameraError("Camera unavailable — upload a photo instead.");
@@ -76,6 +88,7 @@ export default function ScanPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- false positive: startCamera only sets state after awaiting getUserMedia
     startCamera();
     return stopCamera;
   }, [startCamera, stopCamera]);
@@ -91,6 +104,7 @@ export default function ScanPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: dataUrl }),
+        signal: AbortSignal.timeout(180_000),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -98,8 +112,12 @@ export default function ScanPage() {
       } else {
         setBeers((json as ScanResult).beers);
       }
-    } catch {
-      setError("Network error — is the dev server running?");
+    } catch (err) {
+      setError(
+        err instanceof DOMException && err.name === "TimeoutError"
+          ? "Scan timed out after 3 minutes. Try again."
+          : `Couldn't reach the scan server (${err instanceof Error ? err.message : "network error"}).`
+      );
     } finally {
       setScanning(false);
     }
@@ -132,6 +150,18 @@ export default function ScanPage() {
           approximate community rating out of 5 — the best picks are
           highlighted.
         </p>
+
+        {error && (
+          <p className="w-full rounded-xl bg-red-50 px-4 py-3 text-center text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+            {error}
+          </p>
+        )}
+
+        {processing && (
+          <p className="animate-pulse text-center text-sm font-medium text-amber-700 dark:text-amber-300">
+            Processing photo…
+          </p>
+        )}
 
         {!frame && (
           <div className="flex w-full flex-col items-center gap-4">
@@ -168,10 +198,17 @@ export default function ScanPage() {
                   onChange={async (e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
+                    setError(null);
+                    setProcessing(true);
                     try {
-                      scan(await fileToJpegDataUrl(file));
+                      const dataUrl = await fileToJpegDataUrl(file);
+                      setProcessing(false);
+                      await scan(dataUrl);
                     } catch (err) {
+                      setProcessing(false);
                       setError(err instanceof Error ? err.message : "Couldn't read that file.");
+                    } finally {
+                      e.target.value = "";
                     }
                   }}
                 />
@@ -223,10 +260,6 @@ export default function ScanPage() {
                   )
               )}
             </div>
-
-            {error && (
-              <p className="text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-            )}
 
             {sortedBeers && sortedBeers.length === 0 && (
               <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
