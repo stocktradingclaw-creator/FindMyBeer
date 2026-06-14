@@ -1,4 +1,5 @@
 import {
+  boolean,
   integer,
   jsonb,
   pgTable,
@@ -96,5 +97,14 @@ export const ratingsCache = pgTable("ratings_cache", {
   key: text("key").primaryKey(),
   untappd: real("untappd"),
   beerAdvocate: real("beerAdvocate"),
+  fetchedAt: timestamp("fetchedAt").notNull().defaultNow(),
+});
+
+// Consolidated review-commentary summaries, also shared across users.
+export const commentaryCache = pgTable("commentary_cache", {
+  key: text("key").primaryKey(),
+  overview: text("overview").notNull(),
+  notes: jsonb("notes").$type<string[]>().notNull().default([]),
+  found: boolean("found").notNull().default(true),
   fetchedAt: timestamp("fetchedAt").notNull().defaultNow(),
 });

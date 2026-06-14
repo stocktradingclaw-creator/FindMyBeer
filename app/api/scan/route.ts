@@ -46,6 +46,25 @@ const BeerSchema = z.object({
     .describe(
       "Most specific bucket relative to the drinker's location, per the prompt's rules; null if unknown"
     ),
+  abv: z
+    .number()
+    .nullable()
+    .describe("Alcohol by volume as a percent (e.g. 6.2), from the label or your knowledge; null if unknown"),
+  colorHex: z
+    .string()
+    .nullable()
+    .describe(
+      "Hex color approximating the beer's actual liquid color (pale straw ~#F4C430, amber ~#C8801E, brown ~#5A2D0C, black stout ~#140C06); null if unknown"
+    ),
+  flavor: z
+    .object({
+      hoppy: z.number().describe("0-5"),
+      malty: z.number().describe("0-5"),
+      bitter: z.number().describe("0-5"),
+      body: z.number().describe("0-5 (light to full-bodied)"),
+    })
+    .nullable()
+    .describe("Flavor profile from your knowledge of this beer/style, each 0-5; null if unknown"),
   box: z
     .object({
       x: z.number().describe("Left edge as a fraction of image width, 0-1"),
@@ -114,6 +133,9 @@ For each distinct beer return one entry:
 - price: the dollar price from a shelf tag, but only when a tag is clearly visible and clearly belongs to this beer. Null otherwise.
 - breweryLocation: the brewery's home city and state/country, from your knowledge. Null if you don't know the brewery.
 - origin: ${originRules} Null when the brewery's location is unknown.
+- abv: the alcohol-by-volume percent from the label or your knowledge of the beer.
+- colorHex: a hex color approximating what this beer actually looks like in the glass.
+- flavor: your best estimate of its profile (hoppy, malty, bitter, body), each 0-5, from your knowledge of the beer and its style.
 - box: the approximate bounding box of one representative facing, in normalized 0-1 coordinates.
 
 Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.

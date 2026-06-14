@@ -52,6 +52,44 @@ function chipClass(highlight: boolean): string {
   }`;
 }
 
+// Only trust a model-supplied color if it's a plain hex value.
+function safeColor(hex: string | null): string | null {
+  return hex && /^#[0-9a-fA-F]{3,8}$/.test(hex) ? hex : null;
+}
+
+type CommentaryData = { overview: string; notes: string[]; found: boolean };
+type CommentaryState = { loading: boolean; data?: CommentaryData; error?: string };
+
+function FlavorBars({
+  flavor,
+}: {
+  flavor: { hoppy: number; malty: number; bitter: number; body: number };
+}) {
+  const rows: [string, number][] = [
+    ["Hoppy", flavor.hoppy],
+    ["Malty", flavor.malty],
+    ["Bitter", flavor.bitter],
+    ["Body", flavor.body],
+  ];
+  return (
+    <div className="flex flex-col gap-1.5">
+      {rows.map(([label, v]) => (
+        <div key={label} className="flex items-center gap-2">
+          <span className="w-12 shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+            {label}
+          </span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+            <div
+              className="h-full rounded-full bg-amber-500"
+              style={{ width: `${(Math.max(0, Math.min(5, v)) / 5) * 100}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function captureFrame(video: HTMLVideoElement): string {
   const scale = Math.min(1, MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
   const canvas = document.createElement("canvas");
@@ -111,6 +149,8 @@ export default function ScanPage() {
   const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
   const [focusedIdx, setFocusedIdx] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [commentary, setCommentary] = useState<Record<number, CommentaryState>>({});
   const [error, setError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
@@ -164,6 +204,8 @@ export default function ScanPage() {
     setVotes({});
     setOriginFilter("all");
     setElapsedMs(0);
+    setExpandedIdx(null);
+    setCommentary({});
     setError(null);
     try {
       const profile = loadTaste();
@@ -203,6 +245,8 @@ export default function ScanPage() {
     setRec(null);
     setVotes({});
     setOriginFilter("all");
+    setExpandedIdx(null);
+    setCommentary({});
     setError(null);
     startCamera();
   }
@@ -230,6 +274,37 @@ export default function ScanPage() {
       .getElementById(`beer-${idx}`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
     window.setTimeout(() => setFocusedIdx((cur) => (cur === idx ? null : cur)), 1600);
+  }
+
+  // Expand a row to show its review summary, fetching it once on first open.
+  async function toggleCommentary(beer: Beer, idx: number) {
+    if (expandedIdx === idx) {
+      setExpandedIdx(null);
+      return;
+    }
+    setExpandedIdx(idx);
+    if (commentary[idx]) return; // already loading or loaded
+    setCommentary((c) => ({ ...c, [idx]: { loading: true } }));
+    try {
+      const res = await fetch("/api/commentary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: beer.name, brewery: beer.brewery }),
+        signal: AbortSignal.timeout(90_000),
+      });
+      const json = await res.json();
+      setCommentary((c) => ({
+        ...c,
+        [idx]: res.ok
+          ? { loading: false, data: json }
+          : { loading: false, error: json.error ?? "Couldn't load reviews." },
+      }));
+    } catch {
+      setCommentary((c) => ({
+        ...c,
+        [idx]: { loading: false, error: "Couldn't reach the server." },
+      }));
+    }
   }
 
   useEffect(() => {
@@ -586,10 +661,11 @@ export default function ScanPage() {
                   <li
                     key={origIdx}
                     id={`beer-${origIdx}`}
-                    className={`flex items-start gap-3 px-4 py-3 transition-colors ${
+                    className={`px-4 py-3 transition-colors ${
                       focusedIdx === origIdx ? "bg-amber-100 dark:bg-amber-950" : ""
                     }`}
                   >
+                    <div className="flex items-start gap-3">
                     <div className="mt-0.5 flex min-w-16 flex-col gap-1">
                       {beer.ratingSource === "live" ? (
                         <>
@@ -606,8 +682,13 @@ export default function ScanPage() {
                         </span>
                       )}
                     </div>
-                    <div className="min-w-0">
-                      <p className="font-medium text-zinc-900 dark:text-zinc-50">
+                    <button
+                      type="button"
+                      onClick={() => toggleCommentary(beer, origIdx)}
+                      aria-expanded={expandedIdx === origIdx}
+                      className="min-w-0 flex-1 cursor-pointer text-left"
+                    >
+                      <span className="block font-medium text-zinc-900 dark:text-zinc-50">
                         {beer.name}
                         <span className="font-normal text-zinc-500 dark:text-zinc-400">
                           {" "}
@@ -623,8 +704,8 @@ export default function ScanPage() {
                             💰 Best value
                           </span>
                         )}
-                      </p>
-                      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      </span>
+                      <span className="block text-sm text-zinc-500 dark:text-zinc-400">
                         {beer.rating !== null && (
                           <span
                             className={
@@ -641,8 +722,22 @@ export default function ScanPage() {
                         {beer.breweryLocation !== null && ` · ${beer.breweryLocation}`}
                         {beer.ratingSource === "estimate" && ` · ${beer.ratingBasis}`}
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
-                      </p>
-                    </div>
+                      </span>
+                      <span className="mt-1 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        {safeColor(beer.colorHex) && (
+                          <span
+                            className="inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-black/10 dark:border-white/20"
+                            style={{ backgroundColor: safeColor(beer.colorHex)! }}
+                          />
+                        )}
+                        {beer.abv !== null && (
+                          <span className="font-medium">{beer.abv.toFixed(1)}% ABV</span>
+                        )}
+                        <span className="text-amber-700 dark:text-amber-300">
+                          {expandedIdx === origIdx ? "Hide details ▴" : "Details & reviews ▾"}
+                        </span>
+                      </span>
+                    </button>
                     <div className="ml-auto flex shrink-0 gap-1">
                       <button
                         onClick={() => vote(beer, 1)}
@@ -667,6 +762,51 @@ export default function ScanPage() {
                         👎
                       </button>
                     </div>
+                    </div>
+                    {expandedIdx === origIdx && (
+                      <div className="mt-3 rounded-xl bg-amber-50/80 p-3 dark:bg-zinc-800/50">
+                        {beer.flavor && (
+                          <div className="mb-3">
+                            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                              Flavor
+                            </p>
+                            <FlavorBars flavor={beer.flavor} />
+                          </div>
+                        )}
+                        <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                          What people say
+                        </p>
+                        {commentary[origIdx]?.loading && (
+                          <p className="animate-pulse text-sm text-zinc-500 dark:text-zinc-400">
+                            Reading Untappd &amp; BeerAdvocate reviews…
+                          </p>
+                        )}
+                        {commentary[origIdx]?.error && (
+                          <p className="text-sm text-red-600 dark:text-red-400">
+                            {commentary[origIdx]?.error}
+                          </p>
+                        )}
+                        {commentary[origIdx]?.data && (
+                          <>
+                            <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                              {commentary[origIdx]?.data?.overview}
+                            </p>
+                            {(commentary[origIdx]?.data?.notes.length ?? 0) > 0 && (
+                              <ul className="mt-2 flex flex-wrap gap-1.5">
+                                {commentary[origIdx]?.data?.notes.map((n, k) => (
+                                  <li
+                                    key={k}
+                                    className="rounded-full bg-white px-2 py-0.5 text-xs text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400"
+                                  >
+                                    {n}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </li>
                   );
                 })}
@@ -686,7 +826,8 @@ export default function ScanPage() {
               <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">
                 On <span className="text-emerald-600 dark:text-emerald-400">live</span> beers the
                 badges show the Untappd (UT) and BeerAdvocate (BA) community scores out of 5;{" "}
-                <em>est.</em> means an AI estimate. Tap a beer on the photo to jump to it below.
+                <em>est.</em> means an AI estimate. Tap a box on the photo to jump to that beer, or
+                tap a beer in the list for its flavor profile and a review summary.
               </p>
             )}
           </div>
