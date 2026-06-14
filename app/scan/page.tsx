@@ -33,6 +33,25 @@ function matchesOrigin(beer: { origin: keyof typeof ORIGIN_RANK | null }, filter
   return ORIGIN_RANK[beer.origin] <= ORIGIN_RANK[filter];
 }
 
+// Compact score string for the photo overlay badge (space is tight there).
+function overlayScore(beer: Beer): string {
+  if (beer.ratingSource === "live") {
+    const parts: string[] = [];
+    if (beer.untappd !== null) parts.push(beer.untappd.toFixed(1));
+    if (beer.beerAdvocate !== null) parts.push(beer.beerAdvocate.toFixed(1));
+    return parts.length ? parts.join(" / ") : "?";
+  }
+  return beer.rating !== null ? `~${beer.rating.toFixed(1)}` : "?";
+}
+
+function chipClass(highlight: boolean): string {
+  return `rounded-full px-2 py-0.5 text-center text-xs font-semibold ${
+    highlight
+      ? "bg-amber-400 text-zinc-900"
+      : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+  }`;
+}
+
 function captureFrame(video: HTMLVideoElement): string {
   const scale = Math.min(1, MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
   const canvas = document.createElement("canvas");
@@ -90,6 +109,7 @@ export default function ScanPage() {
   const [hasTaste, setHasTaste] = useState(true);
   const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
   const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
+  const [focusedIdx, setFocusedIdx] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
@@ -199,6 +219,15 @@ export default function ScanPage() {
       recordStyleFeedback(beer.style, delta);
     }
     setVotes((v) => ({ ...v, [beer.name]: value }));
+  }
+
+  // Clicking a box on the photo scrolls to that beer's row and flashes it.
+  function focusBeer(idx: number) {
+    setFocusedIdx(idx);
+    document
+      .getElementById(`beer-${idx}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(() => setFocusedIdx((cur) => (cur === idx ? null : cur)), 1600);
   }
 
   useEffect(() => {
@@ -435,15 +464,18 @@ export default function ScanPage() {
                 (beer, i) =>
                   beer.box &&
                   matchesOrigin(beer, originFilter) && (
-                    <div
+                    <button
                       key={i}
-                      className={`absolute rounded-md border-2 ${
+                      type="button"
+                      onClick={() => focusBeer(i)}
+                      aria-label={`Jump to ${beer.name} in the list below`}
+                      className={`absolute cursor-pointer rounded-md border-2 transition-shadow ${
                         beer === recBeer
                           ? "border-violet-400"
                           : beer.rating !== null && beer.rating === topRating
                             ? "border-amber-400"
                             : "border-white/70"
-                      }`}
+                      } ${focusedIdx === i ? "ring-2 ring-amber-400 ring-offset-1" : ""}`}
                       style={{
                         left: `${beer.box.x * 100}%`,
                         top: `${beer.box.y * 100}%`,
@@ -458,9 +490,9 @@ export default function ScanPage() {
                             : "bg-white/90 text-zinc-800"
                         }`}
                       >
-                        {beer.rating !== null ? `★ ${beer.rating.toFixed(1)}` : "?"}
+                        {overlayScore(beer)}
                       </span>
-                    </div>
+                    </button>
                   )
               )}
             </div>
@@ -515,17 +547,34 @@ export default function ScanPage() {
 
             {visibleBeers && visibleBeers.length > 0 && (
               <ul className="w-full divide-y divide-amber-900/10 rounded-2xl bg-white shadow-sm dark:divide-amber-100/10 dark:bg-zinc-900">
-                {visibleBeers.map((beer, i) => (
-                  <li key={i} className="flex items-start gap-3 px-4 py-3">
-                    <span
-                      className={`mt-0.5 min-w-14 rounded-full px-2 py-0.5 text-center text-sm font-bold ${
-                        beer.rating !== null && beer.rating === topRating
-                          ? "bg-amber-400 text-zinc-900"
-                          : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
-                      }`}
-                    >
-                      {beer.rating !== null ? `★ ${beer.rating.toFixed(1)}` : "—"}
-                    </span>
+                {visibleBeers.map((beer) => {
+                  const origIdx = (beers ?? []).indexOf(beer);
+                  const isTop = beer.rating !== null && beer.rating === topRating;
+                  return (
+                  <li
+                    key={origIdx}
+                    id={`beer-${origIdx}`}
+                    className={`flex items-start gap-3 px-4 py-3 transition-colors ${
+                      focusedIdx === origIdx ? "bg-amber-100 dark:bg-amber-950" : ""
+                    }`}
+                  >
+                    <div className="mt-0.5 flex min-w-16 flex-col gap-1">
+                      {beer.ratingSource === "live" &&
+                      (beer.untappd !== null || beer.beerAdvocate !== null) ? (
+                        <>
+                          {beer.untappd !== null && (
+                            <span className={chipClass(isTop)}>UT {beer.untappd.toFixed(1)}</span>
+                          )}
+                          {beer.beerAdvocate !== null && (
+                            <span className={chipClass(isTop)}>BA {beer.beerAdvocate.toFixed(1)}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className={chipClass(isTop)}>
+                          {beer.rating !== null ? `~${beer.rating.toFixed(1)}` : "—"}
+                        </span>
+                      )}
+                    </div>
                     <div className="min-w-0">
                       <p className="font-medium text-zinc-900 dark:text-zinc-50">
                         {beer.name}
@@ -558,16 +607,8 @@ export default function ScanPage() {
                         )}
                         {beer.price !== null && `$${beer.price.toFixed(2)} · `}
                         {beer.style}
-                        {beer.breweryLocation !== null && ` · ${beer.breweryLocation}`} ·{" "}
-                        {beer.ratingSource === "live"
-                          ? [
-                              beer.untappd !== null && `Untappd ${beer.untappd.toFixed(1)}`,
-                              beer.beerAdvocate !== null &&
-                                `BeerAdvocate ${beer.beerAdvocate.toFixed(1)}`,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")
-                          : beer.ratingBasis}
+                        {beer.breweryLocation !== null && ` · ${beer.breweryLocation}`}
+                        {beer.ratingSource === "estimate" && ` · ${beer.ratingBasis}`}
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
                       </p>
                     </div>
@@ -596,7 +637,8 @@ export default function ScanPage() {
                       </button>
                     </div>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
 
@@ -611,9 +653,9 @@ export default function ScanPage() {
 
             {sortedBeers && sortedBeers.length > 0 && (
               <p className="text-center text-xs text-zinc-400 dark:text-zinc-500">
-                On <span className="text-emerald-600 dark:text-emerald-400">live</span> beers the ★
-                is the consolidated score — the average of the Untappd and BeerAdvocate scores
-                found just now. <em>est.</em> means an AI estimate.
+                On <span className="text-emerald-600 dark:text-emerald-400">live</span> beers the
+                badges show the Untappd (UT) and BeerAdvocate (BA) community scores out of 5;{" "}
+                <em>est.</em> means an AI estimate. Tap a beer on the photo to jump to it below.
               </p>
             )}
           </div>
