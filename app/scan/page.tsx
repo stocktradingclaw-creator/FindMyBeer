@@ -34,12 +34,12 @@ function matchesOrigin(beer: { origin: keyof typeof ORIGIN_RANK | null }, filter
 }
 
 // Compact score string for the photo overlay badge (space is tight there).
+// Live beers always show both sites as UT/BA with a dash for a missing one.
 function overlayScore(beer: Beer): string {
   if (beer.ratingSource === "live") {
-    const parts: string[] = [];
-    if (beer.untappd !== null) parts.push(beer.untappd.toFixed(1));
-    if (beer.beerAdvocate !== null) parts.push(beer.beerAdvocate.toFixed(1));
-    return parts.length ? parts.join(" / ") : "?";
+    const ut = beer.untappd !== null ? beer.untappd.toFixed(1) : "–";
+    const ba = beer.beerAdvocate !== null ? beer.beerAdvocate.toFixed(1) : "–";
+    return `${ut}/${ba}`;
   }
   return beer.rating !== null ? `~${beer.rating.toFixed(1)}` : "?";
 }
@@ -110,6 +110,7 @@ export default function ScanPage() {
   const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
   const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
   const [focusedIdx, setFocusedIdx] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const stopCamera = useCallback(() => {
@@ -162,6 +163,7 @@ export default function ScanPage() {
     setRec(null);
     setVotes({});
     setOriginFilter("all");
+    setElapsedMs(0);
     setError(null);
     try {
       const profile = loadTaste();
@@ -247,6 +249,15 @@ export default function ScanPage() {
     };
   }, [sessionStatus, authed]);
 
+  // Tick an elapsed-time counter while a scan is in flight, so the progress
+  // UI keeps visibly moving (the request itself returns everything at once).
+  useEffect(() => {
+    if (!scanning) return;
+    const start = Date.now();
+    const id = window.setInterval(() => setElapsedMs(Date.now() - start), 250);
+    return () => window.clearInterval(id);
+  }, [scanning]);
+
   function markPicking() {
     sessionStorage.setItem(PICK_FLAG, String(Date.now()));
   }
@@ -318,6 +329,18 @@ export default function ScanPage() {
   const visibleBeers = sortedBeers?.filter((b) => matchesOrigin(b, originFilter)) ?? null;
   const originCount = (filter: OriginFilter) =>
     beers?.filter((b) => matchesOrigin(b, filter)).length ?? 0;
+
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+  // Eases toward (not to) 100% so the bar always advances but never claims done.
+  const scanProgress = Math.min(96, Math.round(100 * (1 - Math.exp(-elapsedMs / 32000))));
+  const scanStage =
+    elapsedSec < 5
+      ? "Looking at the shelf…"
+      : elapsedSec < 18
+        ? "Identifying the beers…"
+        : elapsedSec < 50
+          ? "Looking up Untappd & BeerAdvocate ratings…"
+          : "Almost there — putting it together…";
   const pricedBeers =
     beers?.filter((b) => b.price !== null && b.price > 0 && b.rating !== null) ?? [];
   const bestValue =
@@ -454,9 +477,18 @@ export default function ScanPage() {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={frame} alt="Captured shelf" className="w-full" />
               {scanning && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <span className="animate-pulse rounded-full bg-white/90 px-5 py-2 text-sm font-medium text-zinc-900">
-                    Reading labels…
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60 px-6">
+                  <span className="text-center text-sm font-medium text-white">
+                    {scanStage}
+                  </span>
+                  <div className="h-2 w-full max-w-xs overflow-hidden rounded-full bg-white/25">
+                    <div
+                      className="h-full rounded-full bg-amber-400 transition-[width] duration-300 ease-out"
+                      style={{ width: `${scanProgress}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-white/70">
+                    {elapsedSec}s · new beers take a little longer to look up
                   </span>
                 </div>
               )}
@@ -559,15 +591,14 @@ export default function ScanPage() {
                     }`}
                   >
                     <div className="mt-0.5 flex min-w-16 flex-col gap-1">
-                      {beer.ratingSource === "live" &&
-                      (beer.untappd !== null || beer.beerAdvocate !== null) ? (
+                      {beer.ratingSource === "live" ? (
                         <>
-                          {beer.untappd !== null && (
-                            <span className={chipClass(isTop)}>UT {beer.untappd.toFixed(1)}</span>
-                          )}
-                          {beer.beerAdvocate !== null && (
-                            <span className={chipClass(isTop)}>BA {beer.beerAdvocate.toFixed(1)}</span>
-                          )}
+                          <span className={chipClass(isTop)}>
+                            UT {beer.untappd !== null ? beer.untappd.toFixed(1) : "—"}
+                          </span>
+                          <span className={chipClass(isTop)}>
+                            BA {beer.beerAdvocate !== null ? beer.beerAdvocate.toFixed(1) : "—"}
+                          </span>
                         </>
                       ) : (
                         <span className={chipClass(isTop)}>

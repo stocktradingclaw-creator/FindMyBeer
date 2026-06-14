@@ -87,15 +87,10 @@ export default function HistoryPage() {
                           className="truncate text-sm text-zinc-700 dark:text-zinc-300"
                         >
                           <span className="font-semibold">
-                            {beer.ratingSource === "live" &&
-                            (beer.untappd !== null || beer.beerAdvocate !== null)
-                              ? [
-                                  beer.untappd !== null && `UT ${beer.untappd.toFixed(1)}`,
-                                  beer.beerAdvocate !== null &&
-                                    `BA ${beer.beerAdvocate.toFixed(1)}`,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" ")
+                            {beer.ratingSource === "live"
+                              ? `UT ${beer.untappd !== null ? beer.untappd.toFixed(1) : "—"} BA ${
+                                  beer.beerAdvocate !== null ? beer.beerAdvocate.toFixed(1) : "—"
+                                }`
                               : beer.rating !== null
                                 ? `~${beer.rating.toFixed(1)}`
                                 : "—"}
