@@ -65,6 +65,18 @@ const BeerSchema = z.object({
     })
     .nullable()
     .describe("Flavor profile from your knowledge of this beer/style, each 0-5; null if unknown"),
+  season: z
+    .enum(["winter", "spring", "summer", "fall", "any"])
+    .nullable()
+    .describe(
+      "The season this beer suits best by style (e.g. stout=winter, crisp lager/wheat=summer, märzen/pumpkin=fall, light/floral=spring), or 'any' for a year-round beer; null if unsure"
+    ),
+  availability: z
+    .enum(["common", "limited", "rare"])
+    .nullable()
+    .describe(
+      "How hard this beer is to find from your knowledge: 'common' = widely distributed year-round, 'limited' = seasonal or limited release, 'rare' = sought-after 'whale' that's hard to get; null if unsure"
+    ),
   box: z
     .object({
       x: z.number().describe("Left edge as a fraction of image width, 0-1"),
@@ -136,6 +148,8 @@ For each distinct beer return one entry:
 - abv: the alcohol-by-volume percent from the label or your knowledge of the beer.
 - colorHex: a hex color approximating what this beer actually looks like in the glass.
 - flavor: your best estimate of its profile (hoppy, malty, bitter, body), each 0-5, from your knowledge of the beer and its style.
+- season: the season this beer fits best by style, or "any" for year-round.
+- availability: how hard the beer is to find — common, limited (seasonal/limited release), or rare (a sought-after "whale").
 - box: the approximate bounding box of one representative facing, in normalized 0-1 coordinates.
 
 Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.

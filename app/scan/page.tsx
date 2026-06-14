@@ -5,7 +5,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
 import type { ScanResponse } from "../api/scan/route";
 import { saveHistoryEntry, type HistoryBeer } from "@/lib/history";
-import { loadTaste, recordStyleFeedback, tasteSummary } from "@/lib/taste";
+import {
+  loadTaste,
+  preferredFlavor,
+  recordStyleFeedback,
+  tasteSummary,
+  type FlavorProfile,
+  type TasteProfile,
+} from "@/lib/taste";
 
 type Beer = ScanResponse["beers"][number];
 
@@ -60,35 +67,63 @@ function safeColor(hex: string | null): string | null {
 type CommentaryData = { overview: string; notes: string[]; found: boolean };
 type CommentaryState = { loading: boolean; data?: CommentaryData; error?: string };
 
+const SEASON_META: Record<string, { label: string; emoji: string; cls: string }> = {
+  winter: { label: "Winter", emoji: "❄️", cls: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200" },
+  spring: { label: "Spring", emoji: "🌱", cls: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200" },
+  summer: { label: "Summer", emoji: "☀️", cls: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200" },
+  fall: { label: "Fall", emoji: "🍂", cls: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-200" },
+  any: { label: "Year-round", emoji: "🗓️", cls: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400" },
+};
+
+// Only flag the hard-to-find ones; common beers get no badge.
+const AVAILABILITY_META: Record<string, { label: string; emoji: string; cls: string }> = {
+  limited: { label: "Limited", emoji: "🔭", cls: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200" },
+  rare: { label: "Rare find", emoji: "🦄", cls: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-200" },
+};
+
 function FlavorBars({
   flavor,
+  pref,
 }: {
-  flavor: { hoppy: number; malty: number; bitter: number; body: number };
+  flavor: FlavorProfile;
+  pref: FlavorProfile | null;
 }) {
-  const rows: [string, number][] = [
-    ["Hoppy", flavor.hoppy],
-    ["Malty", flavor.malty],
-    ["Bitter", flavor.bitter],
-    ["Body", flavor.body],
+  const rows: [string, keyof FlavorProfile][] = [
+    ["Hoppy", "hoppy"],
+    ["Malty", "malty"],
+    ["Bitter", "bitter"],
+    ["Body", "body"],
   ];
   return (
     <div className="flex flex-col gap-1.5">
-      {rows.map(([label, v]) => (
-        <div key={label} className="flex items-center gap-2">
-          <span className="w-12 shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
-            {label}
-          </span>
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
-            <div
-              className="h-full rounded-full bg-amber-500"
-              style={{ width: `${(Math.max(0, Math.min(5, v)) / 5) * 100}%` }}
-            />
+      {rows.map(([label, axisKey]) => {
+        const v = flavor[axisKey];
+        const p = pref?.[axisKey];
+        return (
+          <div key={label} className="flex items-center gap-2">
+            <span className="w-12 shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+              {label}
+            </span>
+            <div className="relative h-2 flex-1 rounded-full bg-zinc-200 dark:bg-zinc-700">
+              <div
+                className="h-full rounded-full bg-amber-500"
+                style={{ width: `${(Math.max(0, Math.min(5, v)) / 5) * 100}%` }}
+              />
+              {p != null && (
+                <div
+                  className="absolute top-1/2 h-3.5 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded bg-violet-600 dark:bg-violet-400"
+                  style={{ left: `${(Math.max(0, Math.min(5, p)) / 5) * 100}%` }}
+                  title="Your preference"
+                />
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
+
 
 function captureFrame(video: HTMLVideoElement): string {
   const scale = Math.min(1, MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
@@ -145,6 +180,7 @@ export default function ScanPage() {
   const [beers, setBeers] = useState<Beer[] | null>(null);
   const [rec, setRec] = useState<ScanResponse["recommendation"]>(null);
   const [hasTaste, setHasTaste] = useState(true);
+  const [profile, setProfile] = useState<TasteProfile | null>(null);
   const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
   const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
   const [focusedIdx, setFocusedIdx] = useState<number | null>(null);
@@ -311,13 +347,16 @@ export default function ScanPage() {
     if (sessionStatus === "loading") return;
     let cancelled = false;
     (async () => {
-      const has = authed
+      const prof = authed
         ? await fetch("/api/taste")
             .then((r) => r.json())
-            .then((j) => Boolean(j.profile))
-            .catch(() => false)
-        : loadTaste() !== null;
-      if (!cancelled) setHasTaste(has);
+            .then((j) => (j.profile as TasteProfile | null) ?? null)
+            .catch(() => null)
+        : loadTaste();
+      if (!cancelled) {
+        setProfile(prof);
+        setHasTaste(prof !== null);
+      }
     })();
     return () => {
       cancelled = true;
@@ -404,6 +443,7 @@ export default function ScanPage() {
   const visibleBeers = sortedBeers?.filter((b) => matchesOrigin(b, originFilter)) ?? null;
   const originCount = (filter: OriginFilter) =>
     beers?.filter((b) => matchesOrigin(b, filter)).length ?? 0;
+  const prefFlavor = preferredFlavor(profile);
 
   const elapsedSec = Math.floor(elapsedMs / 1000);
   // Eases toward (not to) 100% so the bar always advances but never claims done.
@@ -723,7 +763,7 @@ export default function ScanPage() {
                         {beer.ratingSource === "estimate" && ` · ${beer.ratingBasis}`}
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
                       </span>
-                      <span className="mt-1 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
                         {safeColor(beer.colorHex) && (
                           <span
                             className="inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-black/10 dark:border-white/20"
@@ -732,6 +772,21 @@ export default function ScanPage() {
                         )}
                         {beer.abv !== null && (
                           <span className="font-medium">{beer.abv.toFixed(1)}% ABV</span>
+                        )}
+                        {beer.season && SEASON_META[beer.season] && (
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${SEASON_META[beer.season].cls}`}
+                          >
+                            {SEASON_META[beer.season].emoji} {SEASON_META[beer.season].label}
+                          </span>
+                        )}
+                        {beer.availability && AVAILABILITY_META[beer.availability] && (
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${AVAILABILITY_META[beer.availability].cls}`}
+                          >
+                            {AVAILABILITY_META[beer.availability].emoji}{" "}
+                            {AVAILABILITY_META[beer.availability].label}
+                          </span>
                         )}
                         <span className="text-amber-700 dark:text-amber-300">
                           {expandedIdx === origIdx ? "Hide details ▴" : "Details & reviews ▾"}
@@ -770,7 +825,13 @@ export default function ScanPage() {
                             <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400">
                               Flavor
                             </p>
-                            <FlavorBars flavor={beer.flavor} />
+                            <FlavorBars flavor={beer.flavor} pref={prefFlavor} />
+                            {prefFlavor && (
+                              <p className="mt-1.5 text-[11px] text-violet-600 dark:text-violet-400">
+                                The violet marker is your usual taste — closer bars mean a better
+                                match.
+                              </p>
+                            )}
                           </div>
                         )}
                         <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400">

@@ -84,3 +84,49 @@ export function tasteSummary(profile: TasteProfile): string {
   }
   return lines.join("\n");
 }
+
+export type FlavorProfile = { hoppy: number; malty: number; bitter: number; body: number };
+
+// Typical flavor profile (each 0-5) for each style, used to derive what the
+// drinker tends to like from their favorite styles + thumbs history.
+const STYLE_FLAVOR: Record<string, FlavorProfile> = {
+  IPA: { hoppy: 4.5, malty: 2, bitter: 4, body: 2.5 },
+  "Hazy IPA": { hoppy: 4, malty: 2.5, bitter: 2.5, body: 3 },
+  "Pale Ale": { hoppy: 3.5, malty: 2.5, bitter: 3, body: 2.5 },
+  "Lager / Pilsner": { hoppy: 2, malty: 2.5, bitter: 2, body: 2 },
+  "Stout / Porter": { hoppy: 1.5, malty: 4, bitter: 3, body: 4.5 },
+  "Sour / Gose": { hoppy: 1, malty: 1.5, bitter: 1, body: 2 },
+  "Wheat / Hefeweizen": { hoppy: 1.5, malty: 3, bitter: 1.5, body: 3 },
+  Belgian: { hoppy: 2, malty: 3.5, bitter: 2.5, body: 3.5 },
+  "Amber / Red Ale": { hoppy: 2.5, malty: 4, bitter: 2.5, body: 3 },
+  "Cider / Seltzer": { hoppy: 0.5, malty: 0.5, bitter: 0.5, body: 1.5 },
+};
+
+// A weighted blend of the styles the drinker likes — favorites count strongly,
+// thumbs feedback nudges it over time. Returns null when there's nothing to go on.
+export function preferredFlavor(profile: TasteProfile | null): FlavorProfile | null {
+  if (!profile) return null;
+  const weights = new Map<string, number>();
+  for (const s of profile.favoriteStyles) weights.set(s, (weights.get(s) ?? 0) + 2);
+  for (const [s, n] of Object.entries(profile.styleFeedback)) {
+    weights.set(s, (weights.get(s) ?? 0) + n);
+  }
+  const acc: FlavorProfile = { hoppy: 0, malty: 0, bitter: 0, body: 0 };
+  let total = 0;
+  for (const [style, w] of weights) {
+    const f = STYLE_FLAVOR[style];
+    if (!f || w <= 0) continue;
+    total += w;
+    acc.hoppy += f.hoppy * w;
+    acc.malty += f.malty * w;
+    acc.bitter += f.bitter * w;
+    acc.body += f.body * w;
+  }
+  if (total <= 0) return null;
+  return {
+    hoppy: acc.hoppy / total,
+    malty: acc.malty / total,
+    bitter: acc.bitter / total,
+    body: acc.body / total,
+  };
+}
