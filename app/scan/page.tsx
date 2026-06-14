@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { signOut, useSession } from "next-auth/react";
-import type { ScanResponse } from "../api/scan/route";
 import { saveHistoryEntry, type HistoryBeer } from "@/lib/history";
 import {
   loadTaste,
@@ -13,8 +12,14 @@ import {
   type FlavorProfile,
   type TasteProfile,
 } from "@/lib/taste";
+import {
+  blankDetails,
+  type IdentifiedBeer,
+  type Recommendation,
+  type ScanBeer,
+} from "@/lib/types";
 
-type Beer = ScanResponse["beers"][number];
+type Beer = ScanBeer;
 
 const MAX_EDGE = 2000; // px — keeps image tokens reasonable while labels stay legible
 
@@ -178,7 +183,8 @@ export default function ScanPage() {
   const [processing, setProcessing] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [beers, setBeers] = useState<Beer[] | null>(null);
-  const [rec, setRec] = useState<ScanResponse["recommendation"]>(null);
+  const [rec, setRec] = useState<Recommendation>(null);
+  const [enriching, setEnriching] = useState(false);
   const [hasTaste, setHasTaste] = useState(true);
   const [profile, setProfile] = useState<TasteProfile | null>(null);
   const [votes, setVotes] = useState<Record<string, 1 | -1>>({});
@@ -240,45 +246,135 @@ export default function ScanPage() {
     setVotes({});
     setOriginFilter("all");
     setElapsedMs(0);
+    setEnriching(false);
     setExpandedIdx(null);
     setCommentary({});
     setError(null);
     try {
-      const profile = loadTaste();
+      // Phase 1 — identify the beers from the photo (fast).
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image: dataUrl,
-          taste: profile ? tasteSummary(profile) : null,
-          location: profile?.location?.trim() || null,
-        }),
-        signal: AbortSignal.timeout(180_000),
+        body: JSON.stringify({ image: dataUrl }),
+        signal: AbortSignal.timeout(120_000),
       });
       const json = await res.json();
       if (!res.ok) {
         setError(json.error ?? "Scan failed. Try again.");
-      } else {
-        const found = (json as ScanResponse).beers;
-        setBeers(found);
-        setRec((json as ScanResponse).recommendation);
-        if (found.length > 0) recordHistory(dataUrl, found);
+        setScanning(false);
+        return;
       }
+      const identified = (json as { beers: IdentifiedBeer[] }).beers;
+      const initial: Beer[] = identified.map((b) => ({
+        ...b,
+        ...blankDetails(),
+        untappd: null,
+        beerAdvocate: null,
+        ratingSource: "estimate" as const,
+        detailsLoaded: false,
+      }));
+      setBeers(initial);
+      setScanning(false);
+      if (initial.length > 0) enrich(dataUrl, initial);
     } catch (err) {
       setError(
         err instanceof DOMException && err.name === "TimeoutError"
-          ? "Scan timed out after 3 minutes. Try again."
+          ? "Scan timed out. Try again."
           : `Couldn't reach the scan server (${err instanceof Error ? err.message : "network error"}).`
       );
-    } finally {
       setScanning(false);
     }
+  }
+
+  // Phases 2 & 3 — knowledge attributes and live ratings, fetched in parallel
+  // and merged into the already-visible beer list as each arrives.
+  async function enrich(dataUrl: string, initial: Beer[]) {
+    setEnriching(true);
+    let latest = initial;
+    const apply = (fn: (prev: Beer[]) => Beer[]) =>
+      setBeers((prev) => {
+        latest = fn(prev ?? []);
+        return latest;
+      });
+
+    const tasteProfile = loadTaste();
+    const detailsReq = fetch("/api/details", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        beers: initial.map(({ name, brewery, style, price }) => ({ name, brewery, style, price })),
+        taste: tasteProfile ? tasteSummary(tasteProfile) : null,
+        location: tasteProfile?.location?.trim() || null,
+      }),
+      signal: AbortSignal.timeout(90_000),
+    })
+      .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => {
+        if (ok && Array.isArray(j.details)) {
+          apply((prev) =>
+            prev.map((b, i) => {
+              const d = j.details[i];
+              if (!d) return { ...b, detailsLoaded: true };
+              const keepLive = b.ratingSource === "live";
+              return {
+                ...b,
+                ...d,
+                rating: keepLive ? b.rating : d.rating,
+                ratingBasis: keepLive ? b.ratingBasis : d.ratingBasis,
+                detailsLoaded: true,
+              };
+            })
+          );
+          setRec(j.recommendation ?? null);
+        } else {
+          apply((prev) => prev.map((b) => ({ ...b, detailsLoaded: true })));
+        }
+      })
+      .catch(() => apply((prev) => prev.map((b) => ({ ...b, detailsLoaded: true }))));
+
+    const ratingsReq = fetch("/api/ratings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ beers: initial.map(({ name, brewery }) => ({ name, brewery })) }),
+      signal: AbortSignal.timeout(150_000),
+    })
+      .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => {
+        if (!ok || !Array.isArray(j.ratings)) return;
+        apply((prev) =>
+          prev.map((b, i) => {
+            const r = j.ratings[i] as { untappd: number | null; beerAdvocate: number | null } | null;
+            const scores = r
+              ? [r.untappd, r.beerAdvocate].filter((n): n is number => typeof n === "number")
+              : [];
+            if (r && scores.length > 0) {
+              const consolidated =
+                Math.round((scores.reduce((a, c) => a + c, 0) / scores.length) * 10) / 10;
+              return {
+                ...b,
+                untappd: r.untappd,
+                beerAdvocate: r.beerAdvocate,
+                rating: consolidated,
+                ratingBasis: "Consolidated from live site scores",
+                ratingSource: "live" as const,
+              };
+            }
+            return b;
+          })
+        );
+      })
+      .catch(() => {});
+
+    await Promise.allSettled([detailsReq, ratingsReq]);
+    setEnriching(false);
+    recordHistory(dataUrl, latest);
   }
 
   function reset() {
     setFrame(null);
     setBeers(null);
     setRec(null);
+    setEnriching(false);
     setVotes({});
     setOriginFilter("all");
     setExpandedIdx(null);
@@ -451,11 +547,9 @@ export default function ScanPage() {
   const scanStage =
     elapsedSec < 5
       ? "Looking at the shelf…"
-      : elapsedSec < 18
-        ? "Identifying the beers…"
-        : elapsedSec < 50
-          ? "Looking up Untappd & BeerAdvocate ratings…"
-          : "Almost there — putting it together…";
+      : elapsedSec < 15
+        ? "Reading the labels…"
+        : "Identifying the beers…";
   const pricedBeers =
     beers?.filter((b) => b.price !== null && b.price > 0 && b.rating !== null) ?? [];
   const bestValue =
@@ -686,6 +780,12 @@ export default function ScanPage() {
               </div>
             )}
 
+            {enriching && (
+              <p className="animate-pulse text-center text-xs text-amber-700 dark:text-amber-300">
+                Adding details & live ratings…
+              </p>
+            )}
+
             {sortedBeers && sortedBeers.length > 0 && visibleBeers?.length === 0 && (
               <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">
                 No {originFilter} beers in this scan — tap All to see everything.
@@ -716,9 +816,11 @@ export default function ScanPage() {
                             BA {beer.beerAdvocate !== null ? beer.beerAdvocate.toFixed(1) : "—"}
                           </span>
                         </>
+                      ) : beer.rating !== null ? (
+                        <span className={chipClass(isTop)}>~{beer.rating.toFixed(1)}</span>
                       ) : (
-                        <span className={chipClass(isTop)}>
-                          {beer.rating !== null ? `~${beer.rating.toFixed(1)}` : "—"}
+                        <span className="animate-pulse rounded-full bg-zinc-100 px-2 py-0.5 text-center text-xs text-zinc-400 dark:bg-zinc-800 dark:text-zinc-500">
+                          ···
                         </span>
                       )}
                     </div>
@@ -764,6 +866,9 @@ export default function ScanPage() {
                         {beer.confidence !== "high" && ` (${beer.confidence} confidence)`}
                       </span>
                       <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                        {!beer.detailsLoaded && (
+                          <span className="animate-pulse">adding details…</span>
+                        )}
                         {safeColor(beer.colorHex) && (
                           <span
                             className="inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-black/10 dark:border-white/20"

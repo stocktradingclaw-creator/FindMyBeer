@@ -1,30 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { waitUntil } from "@vercel/functions";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { auth } from "@/auth";
-import { db, hasDb } from "@/lib/db";
-import { lookupLiveRatings, ratingKey, type LiveRating } from "@/lib/ratings";
-import { tasteProfiles } from "@/lib/schema";
-import { tasteSummary, type TasteProfile } from "@/lib/taste";
+import type { IdentifiedBeer } from "@/lib/types";
 
-// Vision pass + web-search rating lookup can take a while on Vercel.
-export const maxDuration = 120;
+// Vision identification only — knowledge attributes and live ratings are
+// fetched separately (see /api/details and /api/ratings) so this returns fast.
+export const maxDuration = 60;
 
-const BeerSchema = z.object({
+const IdentifiedBeerSchema = z.object({
   name: z.string().describe("The beer's name as printed on the label"),
   brewery: z.string().describe("The brewery that makes it"),
   style: z.string().describe("Beer style, e.g. Hazy IPA, Imperial Stout"),
-  rating: z
-    .number()
-    .nullable()
-    .describe(
-      "Approximate enthusiast rating out of 5, in the style of BeerAdvocate/Untappd community scores. Null if the beer is not recognized well enough to estimate."
-    ),
-  ratingBasis: z
-    .string()
-    .describe("One short sentence on what the rating estimate is based on"),
   confidence: z
     .enum(["high", "medium", "low"])
     .describe(
@@ -35,47 +21,6 @@ const BeerSchema = z.object({
     .nullable()
     .describe(
       "Shelf price in dollars if a price tag is clearly visible and attributable to this beer, else null"
-    ),
-  breweryLocation: z
-    .string()
-    .nullable()
-    .describe("The brewery's home city and state/country from your knowledge, else null"),
-  origin: z
-    .enum(["local", "regional", "domestic", "international"])
-    .nullable()
-    .describe(
-      "Most specific bucket relative to the drinker's location, per the prompt's rules; null if unknown"
-    ),
-  abv: z
-    .number()
-    .nullable()
-    .describe("Alcohol by volume as a percent (e.g. 6.2), from the label or your knowledge; null if unknown"),
-  colorHex: z
-    .string()
-    .nullable()
-    .describe(
-      "Hex color approximating the beer's actual liquid color (pale straw ~#F4C430, amber ~#C8801E, brown ~#5A2D0C, black stout ~#140C06); null if unknown"
-    ),
-  flavor: z
-    .object({
-      hoppy: z.number().describe("0-5"),
-      malty: z.number().describe("0-5"),
-      bitter: z.number().describe("0-5"),
-      body: z.number().describe("0-5 (light to full-bodied)"),
-    })
-    .nullable()
-    .describe("Flavor profile from your knowledge of this beer/style, each 0-5; null if unknown"),
-  season: z
-    .enum(["winter", "spring", "summer", "fall", "any"])
-    .nullable()
-    .describe(
-      "The season this beer suits best by style (e.g. stout=winter, crisp lager/wheat=summer, märzen/pumpkin=fall, light/floral=spring), or 'any' for a year-round beer; null if unsure"
-    ),
-  availability: z
-    .enum(["common", "limited", "rare"])
-    .nullable()
-    .describe(
-      "How hard this beer is to find from your knowledge: 'common' = widely distributed year-round, 'limited' = seasonal or limited release, 'rare' = sought-after 'whale' that's hard to get; null if unsure"
     ),
   box: z
     .object({
@@ -90,81 +35,19 @@ const BeerSchema = z.object({
     ),
 });
 
-const ScanResultSchema = z.object({
-  beers: z.array(BeerSchema),
-  recommendation: z
-    .object({
-      index: z
-        .number()
-        .describe("0-based index into the beers array of the single recommended beer"),
-      reason: z
-        .string()
-        .describe(
-          "One or two friendly sentences addressed to the drinker explaining why this is their pick today"
-        ),
-    })
-    .nullable()
-    .describe("The one beer to recommend to this drinker right now; null if no beers found"),
-});
+const IdentifySchema = z.object({ beers: z.array(IdentifiedBeerSchema) });
 
-export type ScanResult = z.infer<typeof ScanResultSchema>;
+export type ScanResponse = { beers: IdentifiedBeer[] };
 
-export type ScanBeer = ScanResult["beers"][number] & {
-  ratingSource: "live" | "estimate";
-  // Per-site live scores (out of 5); null when not found or not looked up.
-  // When live, `rating` is the consolidated score: the average of these.
-  untappd: number | null;
-  beerAdvocate: number | null;
-};
+const PROMPT = `This photo shows a beer shelf, fridge, or display. Your only job is to identify what's on it — read the labels carefully.
 
-export type ScanResponse = {
-  beers: ScanBeer[];
-  recommendation: { index: number; reason: string } | null;
-};
-
-function seasonFor(date: Date): string {
-  const month = date.getMonth();
-  if (month === 11 || month <= 1) return "winter";
-  if (month <= 4) return "spring";
-  if (month <= 7) return "summer";
-  return "fall";
-}
-
-function buildPrompt(taste: string | null, location: string | null): string {
-  const today = new Date();
-  const originRules = location
-    ? `The drinker is in ${location}. Classify into the MOST specific bucket that applies: "local" = brewed in roughly the same metro area or within ~75 miles; "regional" = same state or a neighboring state; "domestic" = same country; "international" = a different country.`
-    : `No drinker location was given. Use "domestic" vs "international" relative to the country this store appears to be in (assume the United States if unclear); never use "local" or "regional".`;
-  return `This photo shows a beer shelf, fridge, or display. Identify every distinct beer (or cider/seltzer) whose label you can read or recognize.
-
-For each distinct beer return one entry:
-- name, brewery, and style from the label (or from your knowledge of the beer if the label is partially visible).
-- rating: your best estimate of its enthusiast community score out of 5, the way BeerAdvocate or Untappd users rate it. Use null if you can't identify the beer well enough to estimate. These are estimates from your knowledge, so calibrate honestly rather than clustering everything at 4.
-- ratingBasis: one short sentence (e.g. "Widely reviewed flagship IPA with a strong reputation").
+Identify every distinct beer (or cider/seltzer) whose label you can read or recognize. For each one return:
+- name, brewery, and style exactly as on the label (use your knowledge to complete a partially visible label only when you're confident which beer it is).
 - confidence in the identification.
-- price: the dollar price from a shelf tag, but only when a tag is clearly visible and clearly belongs to this beer. Null otherwise.
-- breweryLocation: the brewery's home city and state/country, from your knowledge. Null if you don't know the brewery.
-- origin: ${originRules} Null when the brewery's location is unknown.
-- abv: the alcohol-by-volume percent from the label or your knowledge of the beer.
-- colorHex: a hex color approximating what this beer actually looks like in the glass.
-- flavor: your best estimate of its profile (hoppy, malty, bitter, body), each 0-5, from your knowledge of the beer and its style.
-- season: the season this beer fits best by style, or "any" for year-round.
-- availability: how hard the beer is to find — common, limited (seasonal/limited release), or rare (a sought-after "whale").
+- price: the dollar amount from a shelf tag, but only when a tag is clearly visible and clearly belongs to this beer. Null otherwise.
 - box: the approximate bounding box of one representative facing, in normalized 0-1 coordinates.
 
-Deduplicate: multiple cans/bottles of the same beer get a single entry. If the photo contains no identifiable beers, return an empty array.
-
-Then choose exactly ONE beer to recommend via the recommendation field (null only if no beers were found). Today is ${today.toISOString().slice(0, 10)} — ${seasonFor(today)} in the northern hemisphere. Weigh together:
-- fit with the drinker's tastes below (the biggest factor when a profile is given);
-- quality and community standing;
-- seasonal fit (rich, dark, warming beers in winter; crisp, refreshing ones in summer; märzen/amber in fall; and seasonal releases when they fit);
-- novelty, matched to how adventurous the drinker says they are — an interesting departure they'd plausibly enjoy can beat a safe favorite;
-- price when visible, as one factor among several — never the deciding factor on its own.
-Write the reason directly to the drinker, mentioning what tipped the choice.
-
-Drinker's taste profile:
-${taste ?? "Unknown — no profile set. Recommend the best overall beer for the season."}`;
-}
+Deduplicate: multiple cans/bottles of the same beer get a single entry. Read carefully and don't invent beers that aren't there. If the photo contains no identifiable beers, return an empty array.`;
 
 type MediaType = "image/jpeg" | "image/png" | "image/webp";
 
@@ -180,36 +63,10 @@ export async function POST(req: Request) {
   }
 
   let image: unknown;
-  let taste: unknown;
-  let location: unknown;
   try {
-    ({ image, taste, location } = await req.json());
+    ({ image } = await req.json());
   } catch {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
-  }
-  let tasteText =
-    typeof taste === "string" && taste.trim() ? taste.slice(0, 1500) : null;
-  let locationText =
-    typeof location === "string" && location.trim() ? location.slice(0, 100) : null;
-
-  // Signed-in users: their server-side profile is the source of truth,
-  // overriding whatever the client sent.
-  const session = await auth().catch(() => null);
-  if (session?.user?.id && hasDb()) {
-    const row = await db().query.tasteProfiles.findFirst({
-      where: eq(tasteProfiles.userId, session.user.id),
-    });
-    if (row) {
-      const profile: TasteProfile = {
-        favoriteStyles: row.favoriteStyles,
-        adventurousness: row.adventurousness as TasteProfile["adventurousness"],
-        priceSensitivity: row.priceSensitivity as TasteProfile["priceSensitivity"],
-        location: row.location,
-        styleFeedback: row.styleFeedback,
-      };
-      tasteText = tasteSummary(profile).slice(0, 1500);
-      locationText = row.location.trim() || null;
-    }
   }
 
   const match =
@@ -240,11 +97,11 @@ export async function POST(req: Request) {
               type: "image",
               source: { type: "base64", media_type: mediaType, data },
             },
-            { type: "text", text: buildPrompt(tasteText, locationText) },
+            { type: "text", text: PROMPT },
           ],
         },
       ],
-      output_config: { format: zodOutputFormat(ScanResultSchema) },
+      output_config: { format: zodOutputFormat(IdentifySchema) },
     });
 
     if (response.stop_reason === "refusal") {
@@ -262,68 +119,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Best-effort upgrade from knowledge-based estimates to real, current
-    // community scores found via web search (cached per beer). Low-confidence
-    // identifications aren't worth a search. The lookup is time-boxed: past
-    // the deadline the scan responds with estimates while the lookup keeps
-    // running and fills the cache for the next scan. (On serverless hosts the
-    // background half may be frozen after the response is sent.)
-    const candidates = parsed.beers
-      .filter((b) => b.confidence !== "low")
-      .map(({ name, brewery }) => ({ name, brewery }));
-    let live = new Map<string, LiveRating>();
-    if (candidates.length > 0) {
-      const t0 = Date.now();
-      const lookup = lookupLiveRatings(candidates);
-      lookup
-        .then((m) => console.log(`scan: rating lookup finished in ${Date.now() - t0}ms (${m.size} beers)`))
-        .catch((err) => console.error("scan: rating lookup failed:", err));
-      try {
-        // On Vercel, keep the background cache-fill alive after the response
-        // is sent; no-op (throws) when running on a plain Node server.
-        waitUntil(lookup.then(() => undefined).catch(() => undefined));
-      } catch {
-        /* not in a Vercel request context */
-      }
-      live = await Promise.race([
-        lookup.catch(() => new Map<string, LiveRating>()),
-        new Promise<Map<string, LiveRating>>((resolve) =>
-          setTimeout(() => resolve(new Map()), 75_000)
-        ),
-      ]);
-      if (live.size === 0) {
-        console.log(`scan: serving estimates (lookup not ready after ${Date.now() - t0}ms)`);
-      }
-    }
-
-    const beers: ScanBeer[] = parsed.beers.map((beer) => {
-      const found = live.get(ratingKey(beer.name, beer.brewery));
-      const scores = [found?.untappd, found?.beerAdvocate].filter(
-        (s): s is number => typeof s === "number"
-      );
-      if (found && scores.length > 0) {
-        const consolidated =
-          Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10;
-        return {
-          ...beer,
-          rating: consolidated,
-          untappd: found.untappd,
-          beerAdvocate: found.beerAdvocate,
-          ratingBasis: "Consolidated from live site scores",
-          ratingSource: "live",
-        };
-      }
-      return { ...beer, untappd: null, beerAdvocate: null, ratingSource: "estimate" };
-    });
-
-    const recommendation =
-      parsed.recommendation &&
-      parsed.recommendation.index >= 0 &&
-      parsed.recommendation.index < beers.length
-        ? parsed.recommendation
-        : null;
-
-    return Response.json({ beers, recommendation } satisfies ScanResponse);
+    return Response.json({ beers: parsed.beers } satisfies ScanResponse);
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
       return Response.json(

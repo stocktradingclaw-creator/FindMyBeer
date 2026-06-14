@@ -26,8 +26,19 @@ function cacheTtl(r: { untappd: number | null; beerAdvocate: number | null }): n
   return PARTIAL_TTL_MS;
 }
 
+// Normalize so minor naming variations between scans still hit the same cache
+// entry (e.g. "Sierra Nevada Brewing Co." vs "Sierra Nevada").
+function norm(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[.,'’"]/g, "")
+    .replace(/\b(brewing co|brewing company|brewing|brewery|beer co|beer company|co|inc|llc)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function ratingKey(name: string, brewery: string): string {
-  return `${brewery.trim().toLowerCase()}|${name.trim().toLowerCase()}`;
+  return `${norm(brewery)}|${norm(name)}`;
 }
 
 async function loadCachedRatings(keys: string[]): Promise<Record<string, LiveRating>> {
@@ -149,6 +160,9 @@ End your reply with exactly one fenced \`\`\`json block: an array with one objec
   const request = {
     model: "claude-opus-4-8",
     max_tokens: 16000,
+    // Low effort keeps the web-search loop snappy; ratings are a non-blocking
+    // enrichment so a missed site retries on the partial-result TTL.
+    output_config: { effort: "low" as const },
     tools: [
       {
         type: "web_search_20260209" as const,
